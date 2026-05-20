@@ -27,6 +27,23 @@ class LoanListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         loan = serializer.save()
+
+        # Credit card loans created from the Loans page need a linked Account
+        # so they appear in the Accounts section and the transaction form.
+        if loan.loan_type == 'credit_card' and loan.account_id is None:
+            account = Account.objects.create(
+                user=self.request.user,
+                name=loan.name,
+                account_type='credit_card',
+                institution=loan.lender or '',
+                balance=loan.current_balance,
+                credit_limit=loan.credit_limit,
+                annual_interest_rate=loan.annual_interest_rate,
+                monthly_payment=loan.monthly_payment or Decimal('0'),
+            )
+            loan.account = account
+            loan.save(update_fields=['account'])
+
         # For lent_to_friend loans, debit the source account if provided
         source_account_id = self.request.data.get('source_account_id')
         if loan.loan_type == 'lent_to_friend' and source_account_id:
