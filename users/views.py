@@ -8,6 +8,17 @@ from .models import User
 from .serializers import RegisterSerializer, UserProfileSerializer, ChangePasswordSerializer
 
 
+def _seed_default_categories(user):
+    from transactions.management.commands.seed_categories import DEFAULTS
+    from transactions.models import Category
+    existing = set(Category.objects.filter(user=user).values_list('name', flat=True))
+    Category.objects.bulk_create([
+        Category(user=user, category_type=cat_type, name=name, icon=icon, color=color, is_system=True)
+        for cat_type, name, icon, color in DEFAULTS
+        if name not in existing
+    ])
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
@@ -17,6 +28,7 @@ class RegisterView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        _seed_default_categories(user)
         refresh = RefreshToken.for_user(user)
         return Response({
             'user': UserProfileSerializer(user).data,

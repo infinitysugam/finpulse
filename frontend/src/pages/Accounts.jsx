@@ -207,8 +207,9 @@ function AccountModal({ initial, onClose }) {
     mutationFn: (data) =>
       isEdit ? api.patch(`/accounts/${initial.id}/`, data) : api.post('/accounts/', data),
     onSuccess: () => {
-      qc.invalidateQueries(['accounts'])
-      qc.invalidateQueries(['loans'])
+      qc.invalidateQueries({ queryKey: ['accounts'] })
+      qc.invalidateQueries({ queryKey: ['loans'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
       onClose()
     },
     onError: (err) => setErrors(err.response?.data || {}),
@@ -329,8 +330,9 @@ function DeleteModal({ account, onClose }) {
   const deleteMutation = useMutation({
     mutationFn: () => api.delete(`/accounts/${account.id}/`),
     onSuccess: () => {
-      qc.invalidateQueries(['accounts'])
-      qc.invalidateQueries(['loans'])
+      qc.invalidateQueries({ queryKey: ['accounts'] })
+      qc.invalidateQueries({ queryKey: ['loans'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
       onClose()
     },
   })
