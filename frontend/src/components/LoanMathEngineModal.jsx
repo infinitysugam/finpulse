@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   X, Calculator, TrendingDown, Table2, Zap,
-  ChevronDown, ChevronUp, Info,
+  ChevronDown, ChevronUp, Info, RefreshCw,
 } from 'lucide-react'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
@@ -141,31 +141,127 @@ function OverviewTab({ data }) {
 
 // ─── Amortisation schedule tab ────────────────────────────────────────────────
 
-function ScheduleTab({ data }) {
-  const { schedule } = data
-  const [showAll, setShowAll] = useState(false)
-  const rows = showAll ? schedule : schedule.slice(0, 24)
+function buildOriginalSchedule(loanData) {
+  const P           = parseFloat(loanData.principal)
+  const annualRate  = parseFloat(loanData.annual_rate_pct) / 100
+  const monthlyRate = annualRate / 12
+  const n           = loanData.term_months
+  const pmt         = parseFloat(loanData.monthly_payment)
+  const startDate   = new Date(loanData.start_date + 'T12:00:00')
 
-  // Chart data — every 3rd row to keep it lean
-  const chartData = schedule
-    .filter((_, i) => i % 3 === 0 || i === schedule.length - 1)
-    .map((r) => ({
-      month: r.month,
-      Balance: Number(r.balance),
-      'Cumul. Interest': Number(r.cumulative_interest),
-    }))
+  let balance = P
+  let cumInterest = 0
+  const rows = []
+
+  for (let month = 1; month <= Math.max(n, 600) && balance > 0.005; month++) {
+    const pDate = new Date(startDate)
+    pDate.setMonth(pDate.getMonth() + month)
+
+    const interest  = balance * monthlyRate
+    const payment   = Math.min(pmt, balance + interest)
+    const principal = payment - interest
+    balance         = Math.max(0, balance - principal)
+    cumInterest    += interest
+
+    rows.push({
+      month,
+      date: pDate.toISOString().split('T')[0],
+      payment,
+      principal,
+      interest,
+      balance,
+      cumInterest,
+    })
+  }
+  return rows
+}
+
+function ScheduleTab({ data, loan }) {
+  const [showAll, setShowAll] = useState(false)
+
+  const origSchedule   = buildOriginalSchedule(data.loan)
+  const actualPayments = [...(loan.payments || [])].sort(
+    (a, b) => new Date(a.payment_date) - new Date(b.payment_date)
+  )
+  const numActual = actualPayments.length
+
+  // Overlay actual payments onto original scheduled rows by index
+  const mergedRows = origSchedule.map((row, i) => ({
+    ...row,
+    actual: i < numActual ? actualPayments[i] : null,
+  }))
+
+  // Summary stats
+  const schedInterestForPaid = origSchedule.slice(0, numActual).reduce((s, r) => s + r.interest, 0)
+  const actualInterestPaid   = actualPayments.reduce((s, p) => s + parseFloat(p.interest_component || 0), 0)
+  const interestSaved        = schedInterestForPaid - actualInterestPaid
+  const totalActualPaid      = actualPayments.reduce((s, p) => s + parseFloat(p.amount || 0), 0)
+  const totalSchedPaid       = origSchedule.slice(0, numActual).reduce((s, r) => s + r.payment, 0)
+
+  const displayRows = showAll ? mergedRows : mergedRows.slice(0, 24)
+
+  // Chart: scheduled balance (dashed) vs actual balance (solid green) + cumulative interest
+  const chartData = origSchedule
+    .filter((_, i) => i % 3 === 0 || i === origSchedule.length - 1)
+    .map((r) => {
+      const idx = r.month - 1
+      return {
+        month: r.month,
+        'Scheduled Balance': r.balance,
+        ...(idx < numActual
+          ? { 'Actual Balance': parseFloat(actualPayments[idx].balance_after || 0) }
+          : {}),
+        'Cumul. Interest': r.cumInterest,
+      }
+    })
 
   return (
     <div className="space-y-6">
+      {/* Summary stats */}
+      {numActual > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-gray-800/60 rounded-xl p-3 text-center">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Payments Made</p>
+            <p className="text-lg font-bold text-white">{numActual}</p>
+          </div>
+          <div className="bg-gray-800/60 rounded-xl p-3 text-center">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Actually Paid</p>
+            <p className="text-lg font-bold text-white">{fmt(totalActualPaid)}</p>
+            <p className="text-[10px] text-gray-600 mt-0.5">Sched: {fmt(totalSchedPaid)}</p>
+          </div>
+          <div className={clsx(
+            'rounded-xl p-3 text-center',
+            interestSaved > 0
+              ? 'bg-emerald-500/10 border border-emerald-500/20'
+              : 'bg-red-500/10 border border-red-500/20'
+          )}>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Interest Saved</p>
+            <p className={clsx('text-lg font-bold', interestSaved > 0 ? 'text-emerald-400' : 'text-red-400')}>
+              {interestSaved > 0 ? '+' : ''}{fmt(interestSaved)}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-0.5">vs original schedule</p>
+          </div>
+          <div className="bg-gray-800/60 rounded-xl p-3 text-center">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Sched. Interest</p>
+            <p className="text-lg font-bold text-red-400">{fmt(schedInterestForPaid)}</p>
+            <p className="text-[10px] text-gray-600 mt-0.5">Actual: {fmt(actualInterestPaid)}</p>
+          </div>
+        </div>
+      )}
+
       {/* Balance chart */}
       <div>
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Balance Over Time</h3>
         <ResponsiveContainer width="100%" height={200}>
           <AreaChart data={chartData}>
             <defs>
-              <linearGradient id="bal" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor="#8b5cf6" stopOpacity={0.3} />
-                <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+              <linearGradient id="balSched" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor="#6b7280" stopOpacity={0.2} />
+                <stop offset="95%" stopColor="#6b7280" stopOpacity={0} />
+              </linearGradient>
+              <linearGradient id="balActual" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%"  stopColor="#10b981" stopOpacity={0.3} />
+                <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
               </linearGradient>
               <linearGradient id="int" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%"  stopColor="#ef4444" stopOpacity={0.2} />
@@ -180,48 +276,154 @@ function ScheduleTab({ data }) {
               formatter={(v, name) => [fmt(v), name]}
             />
             <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
-            <Area type="monotone" dataKey="Balance" stroke="#8b5cf6" fill="url(#bal)" strokeWidth={2} />
-            <Area type="monotone" dataKey="Cumul. Interest" stroke="#ef4444" fill="url(#int)" strokeWidth={2} />
+            <Area type="monotone" dataKey="Scheduled Balance" stroke="#6b7280" fill="url(#balSched)"  strokeWidth={2} strokeDasharray="5 3" />
+            <Area type="monotone" dataKey="Actual Balance"    stroke="#10b981" fill="url(#balActual)" strokeWidth={2} />
+            <Area type="monotone" dataKey="Cumul. Interest"   stroke="#ef4444" fill="url(#int)"       strokeWidth={1.5} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
 
       {/* Table */}
       <div>
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Payment Schedule</h3>
+        <div className="flex items-center gap-3 mb-3">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Payment Schedule</h3>
+          {numActual > 0 && (
+            <span className="text-[10px] text-gray-600">
+              Top line = actual &nbsp;·&nbsp; Bottom line = original schedule
+            </span>
+          )}
+        </div>
         <div className="overflow-x-auto rounded-xl border border-gray-800">
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-gray-800 bg-gray-800/50">
-                {['#', 'Date', 'Days', 'Payment', 'Principal', 'Interest', 'Balance', 'Cum. Interest'].map((h) => (
-                  <th key={h} className="px-3 py-2.5 text-left font-medium text-gray-400">{h}</th>
+                {['#', 'Status', 'Date', 'Payment', 'Principal', 'Interest', 'Balance', 'Int. Saved'].map((h) => (
+                  <th key={h} className="px-3 py-2.5 text-left font-medium text-gray-400 whitespace-nowrap">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
-                <tr key={r.month} className={clsx('border-b border-gray-800/60', i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-800/20')}>
-                  <td className="px-3 py-2 text-gray-500">{r.month}</td>
-                  <td className="px-3 py-2 text-gray-300">{r.payment_date}</td>
-                  <td className="px-3 py-2 text-gray-500">{r.days_in_period}</td>
-                  <td className="px-3 py-2 font-medium text-white">{fmt(r.payment)}</td>
-                  <td className="px-3 py-2 text-violet-400">{fmt(r.principal)}</td>
-                  <td className="px-3 py-2 text-red-400">{fmt(r.interest)}</td>
-                  <td className="px-3 py-2 text-gray-300">{fmt(r.balance)}</td>
-                  <td className="px-3 py-2 text-gray-500">{fmt(r.cumulative_interest)}</td>
-                </tr>
-              ))}
+              {displayRows.map((row, i) => {
+                const actual   = row.actual
+                const intSaved = actual
+                  ? row.interest - parseFloat(actual.interest_component || 0)
+                  : null
+
+                return (
+                  <tr
+                    key={row.month}
+                    className={clsx(
+                      'border-b border-gray-800/60 transition-colors',
+                      actual
+                        ? 'bg-emerald-950/20 hover:bg-emerald-950/35'
+                        : i % 2 === 0 ? 'bg-gray-900 hover:bg-gray-800/50' : 'bg-gray-800/20 hover:bg-gray-800/50'
+                    )}
+                  >
+                    {/* # */}
+                    <td className="px-3 py-2.5 text-gray-500 font-mono align-top">{row.month}</td>
+
+                    {/* Status */}
+                    <td className="px-3 py-2.5 align-top">
+                      {actual ? (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full text-[10px] font-medium whitespace-nowrap">
+                          ✓ Paid
+                        </span>
+                      ) : (
+                        <span className="text-gray-600 text-[10px]">Upcoming</span>
+                      )}
+                    </td>
+
+                    {/* Date — actual on top (green), scheduled below (gray strikethrough) */}
+                    <td className="px-3 py-2.5 align-top">
+                      {actual ? (
+                        <div className="space-y-0.5">
+                          <div className="text-emerald-400 font-medium">{actual.payment_date}</div>
+                          <div className="text-gray-600 line-through">{row.date}</div>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">{row.date}</span>
+                      )}
+                    </td>
+
+                    {/* Payment */}
+                    <td className="px-3 py-2.5 align-top">
+                      {actual ? (
+                        <div className="space-y-0.5">
+                          <div className="text-white font-medium">{fmt(actual.amount)}</div>
+                          <div className="text-gray-600">{fmt(row.payment)}</div>
+                        </div>
+                      ) : (
+                        <span className="font-medium text-white">{fmt(row.payment)}</span>
+                      )}
+                    </td>
+
+                    {/* Principal */}
+                    <td className="px-3 py-2.5 align-top">
+                      {actual ? (
+                        <div className="space-y-0.5">
+                          <div className="text-violet-400">{fmt(actual.principal_component)}</div>
+                          <div className="text-gray-600">{fmt(row.principal)}</div>
+                        </div>
+                      ) : (
+                        <span className="text-violet-400">{fmt(row.principal)}</span>
+                      )}
+                    </td>
+
+                    {/* Interest */}
+                    <td className="px-3 py-2.5 align-top">
+                      {actual ? (
+                        <div className="space-y-0.5">
+                          <div className="text-red-400">{fmt(actual.interest_component)}</div>
+                          <div className="text-gray-600">{fmt(row.interest)}</div>
+                        </div>
+                      ) : (
+                        <span className="text-red-400">{fmt(row.interest)}</span>
+                      )}
+                    </td>
+
+                    {/* Balance */}
+                    <td className="px-3 py-2.5 align-top">
+                      {actual ? (
+                        <div className="space-y-0.5">
+                          <div className="text-gray-300">{fmt(actual.balance_after)}</div>
+                          <div className="text-gray-600">{fmt(row.balance)}</div>
+                        </div>
+                      ) : (
+                        <span className="text-gray-300">{fmt(row.balance)}</span>
+                      )}
+                    </td>
+
+                    {/* Interest saved this period */}
+                    <td className="px-3 py-2.5 align-top">
+                      {intSaved != null ? (
+                        <span className={clsx(
+                          'font-medium',
+                          intSaved > 0.005  ? 'text-emerald-400'
+                          : intSaved < -0.005 ? 'text-red-400'
+                          : 'text-gray-500'
+                        )}>
+                          {intSaved > 0.005 ? '+' : ''}{fmt(intSaved)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-700">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
 
-        {schedule.length > 24 && (
+        {mergedRows.length > 24 && (
           <button
             onClick={() => setShowAll((s) => !s)}
             className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 mt-3 transition-colors"
           >
             {showAll ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            {showAll ? `Show first 24 of ${schedule.length}` : `Show all ${schedule.length} rows`}
+            {showAll
+              ? `Show first 24 of ${mergedRows.length}`
+              : `Show all ${mergedRows.length} rows`}
           </button>
         )}
       </div>
@@ -393,12 +595,344 @@ function WhatIfTab({ loan, method }) {
   )
 }
 
+// ─── Refinance tab ────────────────────────────────────────────────────────────
+
+const TERM_PRESETS = [24, 36, 48, 60, 72, 84]
+
+function calcMonthlyPayment(principal, annualRatePct, termMonths) {
+  const r = annualRatePct / 100 / 12
+  if (r === 0) return principal / termMonths
+  const factor = (1 + r) ** termMonths
+  return principal * (r * factor) / (factor - 1)
+}
+
+function buildRefinanceSched(principal, annualRatePct, termMonths, startDateStr) {
+  return buildOriginalSchedule({
+    principal:       String(principal),
+    annual_rate_pct: String(annualRatePct),
+    term_months:     termMonths,
+    monthly_payment: String(calcMonthlyPayment(principal, annualRatePct, termMonths).toFixed(4)),
+    start_date:      startDateStr,
+  })
+}
+
+function RefScheduleTable({ current, refinanced }) {
+  const [showAll, setShowAll] = useState(false)
+  const maxLen    = Math.max(current.length, refinanced.length)
+  const totalShow = showAll ? maxLen : Math.min(24, maxLen)
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Schedule Comparison</h3>
+      <div className="overflow-x-auto rounded-xl border border-gray-800">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-700 bg-gray-800/50">
+              <th rowSpan={2} className="px-3 py-2 text-left text-gray-400 font-medium border-r border-gray-700">#</th>
+              <th colSpan={4} className="px-3 py-1.5 text-center text-gray-400 font-medium border-r border-gray-700 border-b border-gray-700">Current (remaining)</th>
+              <th colSpan={4} className="px-3 py-1.5 text-center text-emerald-400 font-medium">Refinanced</th>
+            </tr>
+            <tr className="border-b border-gray-800 bg-gray-800/30 text-[10px] text-gray-500 font-normal">
+              {['Date', 'Payment', 'Interest', 'Balance'].map((h) => (
+                <th key={`c-${h}`} className="px-2 py-1.5 text-left">{h}</th>
+              ))}
+              <th className="border-l border-gray-700 px-2 py-1.5 text-left text-emerald-600">Date</th>
+              {['Payment', 'Interest', 'Balance'].map((h) => (
+                <th key={`r-${h}`} className="px-2 py-1.5 text-left">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: totalShow }, (_, i) => {
+              const c = current[i]
+              const r = refinanced[i]
+              const intDiff = c && r
+                ? parseFloat(c.interest) - r.interest
+                : null
+              return (
+                <tr key={i} className={clsx('border-b border-gray-800/60', i % 2 === 0 ? 'bg-gray-900' : 'bg-gray-800/20')}>
+                  <td className="px-3 py-2 text-gray-500 border-r border-gray-800">{i + 1}</td>
+                  <td className="px-2 py-2 text-gray-400">{c?.payment_date ?? '—'}</td>
+                  <td className="px-2 py-2 text-white">{c ? fmt(c.payment) : '—'}</td>
+                  <td className="px-2 py-2 text-red-400">{c ? fmt(c.interest) : '—'}</td>
+                  <td className="px-2 py-2 text-gray-300 border-r border-gray-800">{c ? fmt(c.balance) : '—'}</td>
+                  <td className="px-2 py-2 text-emerald-300">{r?.date ?? '—'}</td>
+                  <td className="px-2 py-2 text-white">{r ? fmt(r.payment) : '—'}</td>
+                  <td className={clsx('px-2 py-2', intDiff == null ? 'text-gray-400' : intDiff > 0.005 ? 'text-emerald-400' : 'text-red-400')}>
+                    {r ? fmt(r.interest) : '—'}
+                  </td>
+                  <td className="px-2 py-2 text-gray-300">{r ? fmt(r.balance) : '—'}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      {maxLen > 24 && (
+        <button
+          onClick={() => setShowAll((s) => !s)}
+          className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 mt-3 transition-colors"
+        >
+          {showAll ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {showAll ? 'Show first 24' : `Show all ${maxLen} rows`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function RefinanceTab({ data }) {
+  const [newRate, setNewRate] = useState('')
+  const [newTerm, setNewTerm] = useState(String(data.loan.term_months))
+  const [result,  setResult]  = useState(null)
+
+  const currentBalance = parseFloat(data.loan.current_balance)
+  const currentRate    = parseFloat(data.loan.annual_rate_pct)
+  const currentSched   = data.schedule   // already from current_balance
+
+  const currentSummary = {
+    monthlyPayment: parseFloat(data.loan.monthly_payment),
+    months:         currentSched.length,
+    totalInterest:  parseFloat(currentSched[currentSched.length - 1]?.cumulative_interest ?? 0),
+    totalPaid:      currentSched.reduce((s, r) => s + parseFloat(r.payment), 0),
+    payoffDate:     currentSched[currentSched.length - 1]?.payment_date ?? '—',
+  }
+
+  function compute() {
+    const rate = parseFloat(newRate)
+    const term = parseInt(newTerm, 10)
+    if (!rate || !term || isNaN(rate) || isNaN(term) || rate <= 0 || term <= 0) return
+
+    const today    = new Date().toISOString().split('T')[0]
+    const refRows  = buildRefinanceSched(currentBalance, rate, term, today)
+    const refPmt   = calcMonthlyPayment(currentBalance, rate, term)
+    const totalInt = refRows.reduce((s, r) => s + r.interest, 0)
+    const totalPd  = refRows.reduce((s, r) => s + r.payment,  0)
+
+    setResult({
+      rate, term, pmt: refPmt, rows: refRows,
+      totalInterest: totalInt,
+      totalPaid:     totalPd,
+      payoffDate:    refRows[refRows.length - 1]?.date ?? '—',
+      months:        refRows.length,
+    })
+  }
+
+  const mthDiff  = result ? currentSummary.monthlyPayment - result.pmt   : null
+  const intDiff  = result ? currentSummary.totalInterest  - result.totalInterest : null
+  const timeDiff = result ? currentSummary.months - result.months : null
+
+  // Chart: merge current vs refinanced balance by month index
+  const chartData = result ? (() => {
+    const map = {}
+    currentSched.forEach((r) => { map[r.month] = { month: r.month, 'Current': parseFloat(r.balance) } })
+    result.rows.forEach((r) => {
+      if (map[r.month]) map[r.month]['Refinanced'] = r.balance
+      else              map[r.month] = { month: r.month, 'Refinanced': r.balance }
+    })
+    return Object.values(map)
+      .sort((a, b) => a.month - b.month)
+      .filter((_, i, arr) => i % 3 === 0 || i === arr.length - 1)
+  })() : []
+
+  return (
+    <div className="space-y-5">
+      {/* Inputs */}
+      <div>
+        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Refinance Parameters</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Refinancing from current balance of <span className="text-white font-medium">{fmt(currentBalance)}</span> at <span className="text-amber-400">{currentRate}% APR</span>
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-xs text-gray-400 block mb-1.5">New APR (%)</label>
+            <input
+              type="number" step="0.001" min="0" value={newRate}
+              onChange={(e) => setNewRate(e.target.value)}
+              placeholder={`e.g. ${Math.max(1, currentRate - 1).toFixed(2)}`}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-violet-500"
+            />
+            {newRate && parseFloat(newRate) < currentRate && (
+              <p className="text-[10px] text-emerald-500 mt-1">
+                ↓ {(currentRate - parseFloat(newRate)).toFixed(3)}% lower than current
+              </p>
+            )}
+            {newRate && parseFloat(newRate) > currentRate && (
+              <p className="text-[10px] text-red-400 mt-1">
+                ↑ {(parseFloat(newRate) - currentRate).toFixed(3)}% higher than current
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1.5">New Term (months)</label>
+            <input
+              type="number" min="1" value={newTerm}
+              onChange={(e) => setNewTerm(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-violet-500 mb-2"
+            />
+            <div className="flex flex-wrap gap-1.5">
+              {TERM_PRESETS.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setNewTerm(String(t))}
+                  className={clsx(
+                    'px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
+                    newTerm === String(t)
+                      ? 'bg-violet-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:text-gray-200 border border-gray-700'
+                  )}
+                >
+                  {t}mo
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={compute}
+          disabled={!newRate || !newTerm}
+          className="flex items-center gap-2 mt-4 px-5 py-2.5 bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-colors"
+        >
+          <RefreshCw size={14} /> Compare Refinance
+        </button>
+      </div>
+
+      {result && (
+        <>
+          {/* Key impact chips */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className={clsx(
+              'rounded-xl p-4 text-center',
+              mthDiff > 0 ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'
+            )}>
+              <p className="text-xs text-gray-400 mb-1">Monthly Payment</p>
+              <p className={clsx('text-xl font-bold', mthDiff > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                {mthDiff > 0 ? '-' : '+'}{fmt(Math.abs(mthDiff))}
+              </p>
+              <p className="text-xs text-gray-600 mt-0.5">{mthDiff > 0 ? 'savings' : 'increase'} /mo</p>
+            </div>
+            <div className={clsx(
+              'rounded-xl p-4 text-center',
+              intDiff > 0 ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'
+            )}>
+              <p className="text-xs text-gray-400 mb-1">Total Interest</p>
+              <p className={clsx('text-xl font-bold', intDiff > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                {intDiff > 0 ? 'Save ' : 'Pay '}{fmt(Math.abs(intDiff))}
+              </p>
+              <p className="text-xs text-gray-600 mt-0.5">over full term</p>
+            </div>
+            <div className="bg-violet-500/10 border border-violet-500/20 rounded-xl p-4 text-center">
+              <p className="text-xs text-gray-400 mb-1">Term {timeDiff > 0 ? 'Shorter' : timeDiff < 0 ? 'Longer' : 'Same'}</p>
+              <p className="text-xl font-bold text-violet-400">
+                {timeDiff === 0 ? '—' : `${Math.abs(timeDiff)} mo`}
+              </p>
+              <p className="text-xs text-gray-600 mt-0.5">
+                {timeDiff !== 0 ? `${(Math.abs(timeDiff) / 12).toFixed(1)} yrs` : 'no change'}
+              </p>
+            </div>
+          </div>
+
+          {/* Side-by-side breakdown */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="bg-gray-800/40 rounded-xl p-4">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Current Loan</p>
+              <div className="space-y-2.5 text-sm">
+                {[
+                  ['Rate',            <span className="text-amber-400">{currentRate}%</span>],
+                  ['Monthly Payment', <span className="text-white font-medium">{fmt(currentSummary.monthlyPayment)}</span>],
+                  ['Months Remaining',<span className="text-white font-medium">{currentSummary.months}</span>],
+                  ['Total Interest',  <span className="text-red-400 font-medium">{fmt(currentSummary.totalInterest)}</span>],
+                  ['Total Cost',      <span className="text-white font-medium">{fmt(currentSummary.totalPaid)}</span>],
+                  ['Payoff Date',     <span className="text-gray-300">{currentSummary.payoffDate}</span>],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex justify-between items-center">
+                    <span className="text-gray-500">{label}</span>
+                    {value}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-emerald-500/5 border border-emerald-500/15 rounded-xl p-4">
+              <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-3">Refinanced</p>
+              <div className="space-y-2.5 text-sm">
+                {[
+                  ['Rate',           <span className={clsx('font-medium', result.rate < currentRate ? 'text-emerald-400' : 'text-red-400')}>{result.rate}%</span>],
+                  ['Monthly Payment',
+                    <div className="text-right">
+                      <span className={clsx('font-medium', mthDiff > 0 ? 'text-emerald-400' : 'text-red-400')}>{fmt(result.pmt)}</span>
+                      {Math.abs(mthDiff) > 0.005 && (
+                        <span className={clsx('text-xs ml-1.5', mthDiff > 0 ? 'text-emerald-600' : 'text-red-600')}>
+                          ({mthDiff > 0 ? '−' : '+'}{fmt(Math.abs(mthDiff))})
+                        </span>
+                      )}
+                    </div>],
+                  ['Term',           <span className="text-white font-medium">{result.term} mo</span>],
+                  ['Total Interest',
+                    <div className="text-right">
+                      <span className={clsx('font-medium', intDiff > 0 ? 'text-emerald-400' : 'text-red-400')}>{fmt(result.totalInterest)}</span>
+                      {Math.abs(intDiff) > 0.005 && (
+                        <span className={clsx('text-xs ml-1.5', intDiff > 0 ? 'text-emerald-600' : 'text-red-600')}>
+                          ({intDiff > 0 ? 'save ' : '+'}{fmt(Math.abs(intDiff))})
+                        </span>
+                      )}
+                    </div>],
+                  ['Total Cost',     <span className="text-white font-medium">{fmt(result.totalPaid)}</span>],
+                  ['Payoff Date',    <span className="text-gray-300">{result.payoffDate}</span>],
+                ].map(([label, value]) => (
+                  <div key={label} className="flex justify-between items-center">
+                    <span className="text-gray-500">{label}</span>
+                    {value}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Balance comparison chart */}
+          <div>
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Balance Comparison</h3>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={chartData}>
+                <defs>
+                  <linearGradient id="refCur" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#6b7280" stopOpacity={0.2} />
+                    <stop offset="95%" stopColor="#6b7280" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="refNew" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#10b981" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+                <XAxis dataKey="month" stroke="#4b5563" tick={{ fill: '#9ca3af', fontSize: 11 }} />
+                <YAxis stroke="#4b5563" tick={{ fill: '#9ca3af', fontSize: 11 }} tickFormatter={fmtK} />
+                <Tooltip
+                  contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
+                  formatter={(v, name) => [fmt(v), name]}
+                />
+                <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 12 }} />
+                <Area type="monotone" dataKey="Current"    stroke="#6b7280" fill="url(#refCur)" strokeWidth={2} strokeDasharray="5 3" />
+                <Area type="monotone" dataKey="Refinanced" stroke="#10b981" fill="url(#refNew)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Schedule comparison table */}
+          <RefScheduleTable current={currentSched} refinanced={result.rows} />
+        </>
+      )}
+    </div>
+  )
+}
+
 // ─── Main modal ───────────────────────────────────────────────────────────────
 
 const TABS = [
   { id: 'overview',  label: 'Overview',    icon: Calculator },
   { id: 'schedule',  label: 'Schedule',    icon: Table2 },
   { id: 'whatif',    label: 'What-If',     icon: TrendingDown },
+  { id: 'refinance', label: 'Refinance',   icon: RefreshCw },
 ]
 
 export default function LoanMathEngineModal({ loan, onClose }) {
@@ -464,9 +998,10 @@ export default function LoanMathEngineModal({ loan, onClose }) {
           )}
           {data && !isLoading && (
             <>
-              {tab === 'overview' && <OverviewTab data={data} />}
-              {tab === 'schedule' && <ScheduleTab data={data} />}
-              {tab === 'whatif'   && <WhatIfTab loan={loan} method={method} />}
+              {tab === 'overview'  && <OverviewTab data={data} />}
+              {tab === 'schedule'  && <ScheduleTab data={data} loan={loan} />}
+              {tab === 'whatif'    && <WhatIfTab loan={loan} method={method} />}
+              {tab === 'refinance' && <RefinanceTab data={data} />}
             </>
           )}
         </div>

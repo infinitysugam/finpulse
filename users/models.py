@@ -35,6 +35,22 @@ class User(AbstractUser):
         help_text='Assets minus liabilities — updated on save of related models'
     )
 
+    # AI agent profile
+    RISK_TOLERANCE_CHOICES = [
+        ('conservative', 'Conservative'),
+        ('moderate', 'Moderate'),
+        ('aggressive', 'Aggressive'),
+        ('very_aggressive', 'Very Aggressive'),
+    ]
+    risk_tolerance = models.CharField(
+        max_length=20, choices=RISK_TOLERANCE_CHOICES, default='moderate',
+        help_text='Investment risk tolerance used by AI recommendations',
+    )
+    savings_rate_target = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text='Target savings rate as % of income, e.g. 20.00 means 20%',
+    )
+
     # Millionaire goal / wealth planner settings
     millionaire_goal = models.DecimalField(
         max_digits=16, decimal_places=2, default=1_000_000

@@ -63,6 +63,10 @@ class Subscription(models.Model):
     class Meta:
         db_table = 'subscriptions'
         ordering = ['category', 'name']
+        indexes = [
+            models.Index(fields=['user', 'status'], name='sub_user_status_idx'),
+            models.Index(fields=['user', 'next_billing_date'], name='sub_user_billing_idx'),
+        ]
 
     def __str__(self):
         return f'{self.name} ({self.billing_cycle})'

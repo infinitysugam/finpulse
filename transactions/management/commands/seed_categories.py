@@ -26,6 +26,7 @@ DEFAULTS = [
     ('expense', 'Pet Care',             '🐾', '#a16207'),
     ('expense', 'Taxes',                '🧾', '#dc2626'),
     ('expense', 'Debt Payment',         '💳', '#9333ea'),
+    ('expense', 'Loan Given to Friend', '🤝', '#0ea5e9'),
     ('expense', 'Other Expense',        '📌', '#6b7280'),
 
     # ── Income ─────────────────────────────────────────────────────────────────

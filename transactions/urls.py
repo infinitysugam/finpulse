@@ -4,6 +4,7 @@ from .views import (
     TransactionListCreateView, TransactionDetailView,
     DashboardSummaryView, NetWorthHistoryView, CategoryTrendsView, CashFlowView,
     DebtHistoryView, CategorySummaryView, CSVUploadView,
+    MonthlySnapshotListView, ExpenseTimeseriesView,
 )
 
 urlpatterns = [
@@ -13,6 +14,8 @@ urlpatterns = [
     path('dashboard/cashflow/', CashFlowView.as_view(), name='cashflow'),
     path('dashboard/debt-history/', DebtHistoryView.as_view(), name='debt-history'),
     path('dashboard/category-summary/', CategorySummaryView.as_view(), name='category-summary'),
+    path('snapshots/', MonthlySnapshotListView.as_view(), name='monthly-snapshots'),
+    path('dashboard/expense-timeseries/', ExpenseTimeseriesView.as_view(), name='expense-timeseries'),
     path('categories/', CategoryListCreateView.as_view(), name='category-list'),
     path('categories/<int:pk>/', CategoryDetailView.as_view(), name='category-detail'),
     path('', TransactionListCreateView.as_view(), name='transaction-list'),

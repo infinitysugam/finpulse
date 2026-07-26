@@ -61,6 +61,12 @@ function TransactionRow({ tx, onEdit, onDelete }) {
               </span>
             </>
           )}
+          {tx.portfolio_info && tx.transaction_type === 'transfer' && (
+            <>
+              <span className="text-gray-700">→</span>
+              <span className="text-xs text-violet-400">📁 {tx.portfolio_info.name} (cash)</span>
+            </>
+          )}
           {tx.loan_info && (
             <>
               <span className="text-gray-700">·</span>
@@ -98,6 +104,11 @@ function TransactionModal({ existing, onClose }) {
   const isEdit = !!existing
   const qc = useQueryClient()
 
+  // For transfer type: 'account' (normal) or 'portfolio' (to portfolio cash)
+  const [transferDest, setTransferDest] = useState(
+    existing?.transaction_type === 'transfer' && existing?.portfolio_info ? 'portfolio' : 'account'
+  )
+
   const { register, handleSubmit, watch, reset } = useForm({
     defaultValues: existing
       ? {
@@ -109,6 +120,7 @@ function TransactionModal({ existing, onClose }) {
           account_id: existing.account_info?.id ?? '',
           to_account_id: existing.to_account_info?.id ?? '',
           loan_id: existing.loan_info?.id ?? '',
+          portfolio_id: existing.portfolio_info?.id ?? '',
           merchant: existing.merchant ?? '',
           notes: existing.notes ?? '',
         }
@@ -132,7 +144,7 @@ function TransactionModal({ existing, onClose }) {
   const { data: portfoliosData } = useQuery({
     queryKey: ['portfolios'],
     queryFn: () => api.get('/investments/portfolios/').then((r) => r.data.results ?? r.data),
-    enabled: txType === 'investment',
+    enabled: txType === 'investment' || txType === 'transfer',
   })
 
   const cats = (catsData ?? []).filter((c) =>
@@ -141,6 +153,9 @@ function TransactionModal({ existing, onClose }) {
   const accounts = accountsData?.results ?? accountsData ?? []
   const friendLoans = (loansData?.results ?? loansData ?? []).filter(
     (l) => l.loan_type === 'friend' && l.status === 'active'
+  )
+  const lentToFriendLoans = (loansData?.results ?? loansData ?? []).filter(
+    (l) => l.loan_type === 'lent_to_friend' && l.status === 'active'
   )
 
   const { mutate, isPending, error } = useMutation({
@@ -151,13 +166,13 @@ function TransactionModal({ existing, onClose }) {
       if (!payload.notes) delete payload.notes
       if (payload.account_id) payload.account_id = Number(payload.account_id)
       else delete payload.account_id
-      if (payload.to_account_id && txType === 'transfer') payload.to_account_id = Number(payload.to_account_id)
+      if (payload.to_account_id && txType === 'transfer' && transferDest === 'account') payload.to_account_id = Number(payload.to_account_id)
       else delete payload.to_account_id
-      // Only send loan_id for expense transactions
-      if (payload.loan_id && txType === 'expense') payload.loan_id = Number(payload.loan_id)
+      // Send loan_id for expense (repaying borrowed) or income (received from lent)
+      if (payload.loan_id && (txType === 'expense' || txType === 'income')) payload.loan_id = Number(payload.loan_id)
       else delete payload.loan_id
-      // Only send portfolio_id for investment transactions
-      if (payload.portfolio_id && txType === 'investment') payload.portfolio_id = Number(payload.portfolio_id)
+      // portfolio_id for investment OR transfer-to-portfolio
+      if (payload.portfolio_id && (txType === 'investment' || (txType === 'transfer' && transferDest === 'portfolio'))) payload.portfolio_id = Number(payload.portfolio_id)
       else delete payload.portfolio_id
       return isEdit
         ? api.patch(`/transactions/${existing.id}/`, payload)
@@ -251,19 +266,58 @@ function TransactionModal({ existing, onClose }) {
           </div>
 
           {txType === 'transfer' && (
-            <div>
-              <label className="text-xs text-gray-400 block mb-1">To Account</label>
-              <select {...register('to_account_id')} className={inputCls}>
-                <option value="">Select destination account</option>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}{a.account_type === 'credit_card' ? ' (Credit Card)' : ''}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-gray-600 mt-1">
-                Paying a credit card? Select it here — both balances will update automatically.
-              </p>
+            <div className="space-y-3">
+              {/* Destination type toggle */}
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Transfer To</label>
+                <div className="flex gap-2">
+                  {[['account', 'Bank Account'], ['portfolio', 'Portfolio Cash']].map(([val, label]) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => setTransferDest(val)}
+                      className={clsx(
+                        'flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors',
+                        transferDest === val
+                          ? 'bg-blue-500/15 border-blue-500 text-blue-400'
+                          : 'border-gray-700 text-gray-500 hover:border-gray-600'
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {transferDest === 'account' ? (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">To Account</label>
+                  <select {...register('to_account_id')} className={inputCls}>
+                    <option value="">Select destination account</option>
+                    {accounts.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}{a.account_type === 'credit_card' ? ' (Credit Card)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-600 mt-1">
+                    Paying a credit card? Select it here — both balances will update automatically.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs text-gray-400 block mb-1">To Portfolio</label>
+                  <select {...register('portfolio_id')} className={inputCls}>
+                    <option value="">Select portfolio</option>
+                    {(portfoliosData ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-600 mt-1">
+                    Amount will be added as cash inside the portfolio.
+                  </p>
+                </div>
+              )}
             </div>
           )}
 
@@ -275,6 +329,20 @@ function TransactionModal({ existing, onClose }) {
                 {friendLoans.map((l) => (
                   <option key={l.id} value={l.id}>
                     {l.name} · ${Number(l.current_balance).toFixed(2)} remaining
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {txType === 'income' && lentToFriendLoans.length > 0 && (
+            <div>
+              <label className="text-xs text-gray-400 block mb-1">Got from friend? (optional)</label>
+              <select {...register('loan_id')} className={inputCls}>
+                <option value="">— Not a friend repayment —</option>
+                {lentToFriendLoans.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name} · ${Number(l.current_balance).toFixed(2)} outstanding
                   </option>
                 ))}
               </select>

@@ -10,6 +10,12 @@ from rest_framework.views import APIView
 from accounts.models import Account
 from transactions.models import Transaction
 from .models import Loan, LoanPayment
+
+
+def _sync_account_balance(loan):
+    """Keep the linked credit-card Account.balance in step with Loan.current_balance."""
+    if loan.loan_type == 'credit_card' and loan.account_id:
+        Account.objects.filter(pk=loan.account_id).update(balance=loan.current_balance)
 from .serializers import (
     LoanSerializer, LoanPaymentSerializer,
     AmortizationRowSerializer, WhatIfSimulatorSerializer,
@@ -84,6 +90,50 @@ class LoanDetailView(generics.RetrieveUpdateDestroyAPIView):
             serializer.save()
 
 
+class LendMoreView(APIView):
+    """Add more money to an existing lent_to_friend loan, optionally debiting an account."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        try:
+            loan = Loan.objects.get(pk=pk, user=request.user, loan_type='lent_to_friend')
+        except Loan.DoesNotExist:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        amount = Decimal(str(request.data.get('amount', 0)))
+        if amount <= 0:
+            return Response({'detail': 'Amount must be positive.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        account_id = request.data.get('account_id')
+
+        with db_transaction.atomic():
+            loan.principal = loan.principal + amount
+            loan.current_balance = loan.current_balance + amount
+            loan.save(update_fields=['principal', 'current_balance'])
+
+            if account_id:
+                try:
+                    account = Account.objects.get(pk=account_id, user=request.user)
+                    account.balance = max(Decimal('0'), account.balance - amount)
+                    account.save(update_fields=['balance'])
+                    Transaction.objects.create(
+                        user=request.user,
+                        account=account,
+                        transaction_type='expense',
+                        title=f'Lent more to {loan.name}',
+                        amount=amount,
+                        date=date.today(),
+                        source='loan_disbursement',
+                    )
+                except Account.DoesNotExist:
+                    pass
+
+        return Response({
+            'principal': str(loan.principal),
+            'current_balance': str(loan.current_balance),
+        })
+
+
 class LoanPaymentListCreateView(generics.ListCreateAPIView):
     serializer_class = LoanPaymentSerializer
     permission_classes = [IsAuthenticated]
@@ -99,6 +149,7 @@ class LoanPaymentListCreateView(generics.ListCreateAPIView):
         if loan.current_balance == 0:
             loan.status = 'paid_off'
         loan.save()
+        _sync_account_balance(loan)
 
 
 class LoanPaymentDetailView(APIView):
@@ -122,6 +173,7 @@ class LoanPaymentDetailView(APIView):
             if loan.status == 'paid_off' and loan.current_balance > 0:
                 loan.status = 'active'
             loan.save(update_fields=['current_balance', 'status'])
+            _sync_account_balance(loan)
             payment.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -418,6 +470,7 @@ class RecordPaymentView(APIView):
             if loan.current_balance == 0:
                 loan.status = 'paid_off'
             loan.save(update_fields=['current_balance', 'status'])
+            _sync_account_balance(loan)
 
             # 3. Credit/debit account + create transaction
             if account:

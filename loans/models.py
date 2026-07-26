@@ -137,6 +137,9 @@ class LoanPayment(models.Model):
     class Meta:
         db_table = 'loan_payments'
         ordering = ['payment_date']
+        indexes = [
+            models.Index(fields=['loan', 'payment_date'], name='loanpay_loan_date_idx'),
+        ]
 
     def __str__(self):
         return f'Payment {self.amount} on {self.payment_date} → {self.loan.name}'

@@ -15,6 +15,10 @@ import Loans from './pages/Loans'
 import Investments from './pages/Investments'
 import AIAgent from './pages/AIAgent'
 import Subscriptions from './pages/Subscriptions'
+import Goals from './pages/Goals'
+import Screener from './pages/Screener'
+import Budget from './pages/Budget'
+import Fitness from './pages/Fitness'
 
 const qc = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -43,6 +47,10 @@ function AppRoutes() {
               <Route path="/investments" element={<Investments />} />
               <Route path="/ai" element={<AIAgent />} />
               <Route path="/subscriptions" element={<Subscriptions />} />
+              <Route path="/goals" element={<Goals />} />
+              <Route path="/screener" element={<Screener />} />
+              <Route path="/budget" element={<Budget />} />
+              <Route path="/fitness" element={<Fitness />} />
             </Routes>
           </Layout>
         </ProtectedRoute>

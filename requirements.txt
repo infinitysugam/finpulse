@@ -13,3 +13,4 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 six==1.17.0
 sqlparse==0.5.5
+yfinance==1.4.0

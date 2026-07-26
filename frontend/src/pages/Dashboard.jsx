@@ -6,11 +6,22 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
   ReferenceLine, LineChart, Line,
 } from 'recharts'
-import { Wallet, TrendingUp, TrendingDown, Target, DollarSign, CalendarClock, PiggyBank } from 'lucide-react'
+import { Wallet, TrendingUp, TrendingDown, Target, DollarSign, CalendarClock, PiggyBank, Flame, Shield, ChevronRight } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import StatCard from '../components/StatCard'
 import useAuthStore from '../store/authStore'
 import api from '../lib/api'
 import clsx from 'clsx'
+
+const GOAL_META = {
+  fire:           { label: 'FIRE',           icon: Flame,       text: 'text-amber-400',   bg: 'bg-amber-500/15',  border: 'border-amber-500/30' },
+  emergency_fund: { label: 'Emergency Fund', icon: Shield,      text: 'text-blue-400',    bg: 'bg-blue-500/15',   border: 'border-blue-500/30' },
+  debt_free:      { label: 'Debt Free',      icon: TrendingDown,text: 'text-red-400',     bg: 'bg-red-500/15',    border: 'border-red-500/30' },
+  savings:        { label: 'Savings',        icon: PiggyBank,   text: 'text-emerald-400', bg: 'bg-emerald-500/15',border: 'border-emerald-500/30' },
+  investment:     { label: 'Investment',     icon: TrendingUp,  text: 'text-violet-400',  bg: 'bg-violet-500/15', border: 'border-violet-500/30' },
+  income:         { label: 'Income',         icon: DollarSign,  text: 'text-cyan-400',    bg: 'bg-cyan-500/15',   border: 'border-cyan-500/30' },
+  custom:         { label: 'Custom',         icon: Target,      text: 'text-gray-400',    bg: 'bg-gray-500/15',   border: 'border-gray-500/30' },
+}
 
 const fmt      = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const fmtShort = (n) => {
@@ -60,9 +71,9 @@ export default function Dashboard() {
   const user = useAuthStore((s) => s.user)
   const [granularity, setGranularity] = useState('monthly')
   const [range, setRange]             = useState('1y')
-  const [trendsRange, setTrendsRange] = useState('6m')
   const [cashflowRange, setCashflowRange] = useState('6m')
-  const [debtRange, setDebtRange] = useState('1y')
+  const [debtRange, setDebtRange]             = useState('1y')
+  const [debtGranularity, setDebtGranularity] = useState('monthly')
 
   // Category summary — date-range + type selectable
   const todayStr = new Date().toISOString().slice(0, 10)
@@ -83,11 +94,22 @@ export default function Dashboard() {
          .then((r) => r.data),
   })
 
-  const { data: trendsData } = useQuery({
-    queryKey: ['category-trends', trendsRange],
+  const [tsGranularity, setTsGranularity] = useState('monthly')
+  const [tsRange, setTsRange]             = useState('6m')
+  const [tsSelected, setTsSelected]       = useState(null) // null = not yet initialised
+
+  const { data: timeseriesData } = useQuery({
+    queryKey: ['expense-timeseries', tsGranularity, tsRange],
     queryFn: () =>
-      api.get(`/transactions/dashboard/category-trends/?range=${trendsRange}`)
+      api.get(`/transactions/dashboard/expense-timeseries/?granularity=${tsGranularity}&range=${tsRange}`)
          .then((r) => r.data),
+    onSuccess: (d) => {
+      // Auto-select top 5 categories on first load
+      if (tsSelected === null && d?.categories?.length) {
+        const top5 = new Set(d.categories.slice(0, 5).map((c) => c.name))
+        setTsSelected(top5)
+      }
+    },
   })
 
   const { data: cashflowData } = useQuery({
@@ -111,11 +133,21 @@ export default function Dashboard() {
   })
 
   const { data: debtHistory, isLoading: debtLoading } = useQuery({
-    queryKey: ['debt-history', debtRange],
+    queryKey: ['debt-history', debtRange, debtGranularity],
     queryFn: () =>
-      api.get(`/transactions/dashboard/debt-history/?range=${debtRange}`)
+      api.get(`/transactions/dashboard/debt-history/?range=${debtRange}&granularity=${debtGranularity}`)
          .then((r) => r.data),
     keepPreviousData: true,
+  })
+
+  const { data: goalsData } = useQuery({
+    queryKey: ['goals'],
+    queryFn: () => api.get('/goals/?status=active').then((r) => r.data),
+  })
+
+  const { data: snapshotsData } = useQuery({
+    queryKey: ['snapshots'],
+    queryFn: () => api.get('/transactions/snapshots/').then((r) => r.data),
   })
 
   const netWorth  = Number(summary?.net_worth ?? 0)
@@ -129,6 +161,13 @@ export default function Dashboard() {
   const savingsRate     = monthlyIncome > 0
     ? Math.round(((monthlyIncome - monthlyExpenses) / monthlyIncome) * 100)
     : 0
+
+  const activeGoals = (goalsData?.results ?? goalsData ?? [])
+    .filter((g) => g.status === 'active')
+    .sort((a, b) => a.priority - b.priority)
+    .slice(0, 4)
+
+  const snapshots = snapshotsData?.snapshots ?? []
 
   const pieData = (summary?.category_breakdown ?? []).slice(0, 8).map((c) => ({
     name:  c.category__name ?? 'Uncategorized',
@@ -207,6 +246,57 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Goals at a Glance */}
+      {activeGoals.length > 0 && (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-2">
+              <Target size={16} className="text-violet-400" />
+              <span className="text-sm font-semibold text-white">Goals at a Glance</span>
+              <span className="text-xs text-gray-500 ml-1">{activeGoals.length} active</span>
+            </div>
+            <Link to="/goals" className="flex items-center gap-1 text-xs text-violet-400 hover:text-violet-300 transition-colors">
+              View all <ChevronRight size={12} />
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {activeGoals.map((g) => {
+              const meta   = GOAL_META[g.goal_type] ?? GOAL_META.custom
+              const Icon   = meta.icon
+              const target = Number(g.effective_target ?? 0)
+              const pct    = Number(g.progress_pct ?? 0)
+              const barCl  = pct >= 100 ? 'bg-emerald-500' : pct >= 70 ? 'bg-violet-500' : pct >= 40 ? 'bg-amber-400' : 'bg-blue-500'
+              return (
+                <div key={g.id} className={clsx('rounded-xl border p-4', meta.border, meta.bg)}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Icon size={14} className={meta.text} />
+                    <span className="text-sm font-medium text-white truncate">{g.name}</span>
+                    <span className={clsx('text-xs ml-auto flex-shrink-0', meta.text)}>{meta.label}</span>
+                  </div>
+                  {target > 0 ? (
+                    <>
+                      <div className="h-2 bg-black/20 rounded-full overflow-hidden mb-1.5">
+                        <div className={clsx('h-full rounded-full', barCl)} style={{ width: `${Math.min(pct, 100)}%` }} />
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className={Number(g.current_amount) < 0 ? 'text-red-400' : 'text-gray-400'}>
+                          {Number(g.current_amount) < 0
+                            ? `−${fmt(Math.abs(Number(g.current_amount)))} net worth`
+                            : `${fmt(g.current_amount)} saved`}
+                        </span>
+                        <span className={meta.text}>{pct.toFixed(1)}%</span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500">No target set</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Net Worth History */}
       <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
@@ -324,23 +414,17 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Category Trends — expenses per category over time */}
+      {/* Expense Trend — multi-line, filterable by category + granularity */}
       <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-sm font-semibold text-white">Expenses by Category Over Time</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Monthly spending breakdown per category</p>
-          </div>
-          <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
-            {SHORT_RANGES.map(({ id, label }) => (
-              <button key={id} onClick={() => setTrendsRange(id)}
-                className={clsx('px-3 py-1 rounded-md text-xs font-medium transition-colors',
-                  trendsRange === id ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-gray-200')}
-              >{label}</button>
-            ))}
-          </div>
-        </div>
-        <CategoryTrendsChart data={trendsData} />
+        <ExpenseTimeseries
+          data={timeseriesData}
+          granularity={tsGranularity}
+          onGranularity={setTsGranularity}
+          range={tsRange}
+          onRange={setTsRange}
+          selected={tsSelected}
+          onSelected={setTsSelected}
+        />
       </div>
 
       {/* Category Breakdown — date-range + type selectable */}
@@ -422,20 +506,51 @@ export default function Dashboard() {
             {debtHistory && (
               <p className="text-xs text-gray-500 mt-0.5">
                 Current debt: <span className="text-amber-400 font-semibold">{fmt(debtHistory.current_debt)}</span>
+                <span className="ml-3 text-gray-600">· Green bars = payments made (right axis)</span>
               </p>
             )}
           </div>
-          <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
-            {RANGES.map(({ id, label }) => (
-              <button key={id} onClick={() => setDebtRange(id)}
-                className={clsx('px-3 py-1 rounded-md text-xs font-medium transition-colors',
-                  debtRange === id ? 'bg-amber-600 text-white' : 'text-gray-400 hover:text-gray-200')}
-              >{label}</button>
-            ))}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
+              {[{id:'daily',label:'Daily'},{id:'weekly',label:'Weekly'},{id:'monthly',label:'Monthly'}].map(({ id, label }) => (
+                <button key={id} onClick={() => setDebtGranularity(id)}
+                  className={clsx('px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                    debtGranularity === id ? 'bg-amber-600 text-white' : 'text-gray-400 hover:text-gray-200')}
+                >{label}</button>
+              ))}
+            </div>
+            <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
+              {RANGES.map(({ id, label }) => (
+                <button key={id} onClick={() => setDebtRange(id)}
+                  className={clsx('px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                    debtRange === id ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-gray-200')}
+                >{label}</button>
+              ))}
+            </div>
           </div>
         </div>
-        <DebtHistoryChart data={debtHistory} loading={debtLoading} />
+        <DebtHistoryChart data={debtHistory} loading={debtLoading} granularity={debtGranularity} />
       </div>
+
+      {/* Savings Rate Trend */}
+      {snapshots.length > 0 && (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 mb-6">
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Savings Rate Trend</h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Monthly savings rate over time
+                {user?.savings_rate_target && (
+                  <span className="ml-2 text-violet-400">
+                    · Target: {Number(user.savings_rate_target).toFixed(0)}%
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <SavingsRateTrend data={snapshots} target={Number(user?.savings_rate_target ?? 0)} />
+        </div>
+      )}
 
       {/* Budget vs Actual + Upcoming Payments */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -493,31 +608,149 @@ function CashFlowChart({ data }) {
   )
 }
 
-function CategoryTrendsChart({ data }) {
-  const series     = data?.series     ?? []
-  const categories = data?.categories ?? []
+const TS_GRANULARITIES = [
+  { id: 'daily',   label: 'Daily' },
+  { id: 'weekly',  label: 'Weekly' },
+  { id: 'monthly', label: 'Monthly' },
+  { id: 'yearly',  label: 'Yearly' },
+]
+const TS_RANGES = [
+  { id: '1m', label: '1M' },
+  { id: '3m', label: '3M' },
+  { id: '6m', label: '6M' },
+  { id: '1y', label: '1Y' },
+  { id: '2y', label: '2Y' },
+]
 
-  if (!series.length || !categories.length) return (
-    <div className="h-64 flex items-center justify-center text-gray-600 text-sm">No expense data yet</div>
-  )
+function ExpenseTimeseries({ data, granularity, onGranularity, range, onRange, selected, onSelected }) {
+  const categories = data?.categories ?? []
+  const series     = data?.series     ?? []
+
+  // Auto-initialise selection when data first arrives
+  const effectiveSelected = selected ?? new Set(categories.slice(0, 5).map((c) => c.name))
+
+  function toggle(name) {
+    const next = new Set(effectiveSelected)
+    next.has(name) ? next.delete(name) : next.add(name)
+    onSelected(next)
+  }
+
+  function selectAll()  { onSelected(new Set(categories.map((c) => c.name))) }
+  function clearAll()   { onSelected(new Set()) }
+
+  const activeCategories = categories.filter((c) => effectiveSelected.has(c.name))
 
   return (
-    <ResponsiveContainer width="100%" height={280}>
-      <BarChart data={series} barSize={18}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" vertical={false} />
-        <XAxis dataKey="month" tick={{ fill: '#9ca3af', fontSize: 12 }} axisLine={false} tickLine={false} />
-        <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} tickFormatter={fmtShort} axisLine={false} tickLine={false} />
-        <Tooltip
-          contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
-          labelStyle={{ color: '#f9fafb', fontSize: 12 }}
-          formatter={(v) => [fmt(v), '']}
-        />
-        <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 11 }} />
-        {categories.map((cat) => (
-          <Bar key={cat.name} dataKey={cat.name} stackId="a" fill={cat.color} radius={[0,0,0,0]} />
-        ))}
-      </BarChart>
-    </ResponsiveContainer>
+    <>
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+        <div>
+          <h2 className="text-sm font-semibold text-white">Expenses by Category</h2>
+          <p className="text-xs text-gray-500 mt-0.5">Multi-line trend — select categories below</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Granularity */}
+          <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
+            {TS_GRANULARITIES.map(({ id, label }) => (
+              <button key={id} onClick={() => onGranularity(id)}
+                className={clsx('px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                  granularity === id ? 'bg-violet-600 text-white' : 'text-gray-400 hover:text-gray-200')}
+              >{label}</button>
+            ))}
+          </div>
+          {/* Range */}
+          <div className="flex gap-1 bg-gray-800 rounded-lg p-1">
+            {TS_RANGES.map(({ id, label }) => (
+              <button key={id} onClick={() => onRange(id)}
+                className={clsx('px-3 py-1 rounded-md text-xs font-medium transition-colors',
+                  range === id ? 'bg-gray-600 text-white' : 'text-gray-400 hover:text-gray-200')}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Category chips */}
+      {categories.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-5">
+          <button
+            onClick={selectAll}
+            className="px-2.5 py-1 rounded-full text-xs font-medium border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 transition-colors"
+          >All</button>
+          <button
+            onClick={clearAll}
+            className="px-2.5 py-1 rounded-full text-xs font-medium border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-500 transition-colors"
+          >None</button>
+          <div className="w-px bg-gray-800 self-stretch" />
+          {categories.map((cat) => {
+            const active = effectiveSelected.has(cat.name)
+            return (
+              <button
+                key={cat.name}
+                onClick={() => toggle(cat.name)}
+                className={clsx(
+                  'flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all',
+                  active ? 'opacity-100' : 'opacity-30 hover:opacity-60',
+                )}
+                style={active
+                  ? { borderColor: cat.color, color: cat.color, background: cat.color + '20' }
+                  : { borderColor: '#374151', color: '#9ca3af' }
+                }
+              >
+                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: cat.color }} />
+                {cat.name}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Chart */}
+      {!series.length ? (
+        <div className="h-64 flex items-center justify-center text-gray-600 text-sm">No expense data yet</div>
+      ) : activeCategories.length === 0 ? (
+        <div className="h-64 flex items-center justify-center text-gray-600 text-sm">Select at least one category</div>
+      ) : (
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={series} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+            <XAxis
+              dataKey="date"
+              tick={{ fill: '#6b7280', fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              interval="preserveStartEnd"
+            />
+            <YAxis
+              tick={{ fill: '#6b7280', fontSize: 11 }}
+              tickFormatter={fmtShort}
+              width={56}
+              axisLine={false}
+              tickLine={false}
+            />
+            <Tooltip
+              contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
+              labelStyle={{ color: '#f9fafb', fontSize: 12, marginBottom: 4 }}
+              formatter={(v, name) => [fmt(v), name]}
+            />
+            <Legend
+              wrapperStyle={{ color: '#9ca3af', fontSize: 11, paddingTop: 12 }}
+            />
+            {activeCategories.map((cat) => (
+              <Line
+                key={cat.name}
+                type="monotone"
+                dataKey={cat.name}
+                stroke={cat.color}
+                strokeWidth={2}
+                dot={false}
+                activeDot={{ r: 5, fill: cat.color }}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </>
   )
 }
 
@@ -589,7 +822,7 @@ function UpcomingPayments({ payments }) {
   )
 }
 
-function DebtHistoryChart({ data, loading }) {
+function DebtHistoryChart({ data, loading, granularity = 'monthly' }) {
   if (loading && !data) return (
     <div className="h-56 flex items-center justify-center text-gray-600 text-sm">Loading…</div>
   )
@@ -599,9 +832,25 @@ function DebtHistoryChart({ data, loading }) {
 
   const series = data.series
 
+  function fmtDate(d) {
+    const dt = new Date(d + 'T00:00:00')
+    if (granularity === 'daily')  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    if (granularity === 'weekly') return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    return dt.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+  }
+
+  function fmtLabel(d) {
+    const dt = new Date(d + 'T00:00:00')
+    if (granularity === 'daily')  return dt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+    if (granularity === 'weekly') return `Week of ${dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+    return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+  }
+
+  const periodLabel = granularity === 'daily' ? 'Today' : granularity === 'weekly' ? 'This Week' : 'This Month'
+
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <ComposedChart data={series} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+    <ResponsiveContainer width="100%" height={260}>
+      <ComposedChart data={series} margin={{ top: 4, right: 56, left: 0, bottom: 0 }}
         style={{ opacity: loading ? 0.6 : 1, transition: 'opacity 0.2s' }}
       >
         <defs>
@@ -611,34 +860,84 @@ function DebtHistoryChart({ data, loading }) {
           </linearGradient>
         </defs>
         <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
-        <XAxis dataKey="date" tick={{ fill: '#6b7280', fontSize: 11 }}
-          tickFormatter={(d) => {
-            const dt = new Date(d + 'T00:00:00')
-            return dt.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
-          }}
+        <XAxis
+          dataKey="date"
+          tick={{ fill: '#6b7280', fontSize: 11 }}
+          tickFormatter={fmtDate}
+          interval="preserveStartEnd"
         />
-        <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} tickFormatter={fmtShort} width={60} />
+        {/* Left axis — total debt */}
+        <YAxis
+          yAxisId="left"
+          tick={{ fill: '#6b7280', fontSize: 11 }}
+          tickFormatter={fmtShort}
+          width={56}
+        />
+        {/* Right axis — payments (separate scale so bars are always visible) */}
+        <YAxis
+          yAxisId="right"
+          orientation="right"
+          tick={{ fill: '#10b981', fontSize: 11 }}
+          tickFormatter={fmtShort}
+          width={56}
+        />
         <Tooltip
           contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
           labelStyle={{ color: '#f9fafb', fontSize: 12 }}
           formatter={(v, name) => {
             if (name === 'total_debt') return [fmt(v), 'Total Debt']
-            if (name === 'paid')       return [fmt(v), 'Paid This Month']
+            if (name === 'paid')       return [fmt(v), `Paid ${periodLabel}`]
             return [fmt(v), name]
           }}
-          labelFormatter={(d) => {
-            const dt = new Date(d + 'T00:00:00')
-            return dt.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-          }}
+          labelFormatter={fmtLabel}
         />
         <Legend
           wrapperStyle={{ color: '#9ca3af', fontSize: 11 }}
-          formatter={(v) => v === 'total_debt' ? 'Total Debt' : 'Paid'}
+          formatter={(v) => v === 'total_debt' ? 'Total Debt' : `Payments (right axis)`}
         />
-        <Bar dataKey="paid" fill="#10b981" fillOpacity={0.6} radius={[2,2,0,0]} yAxisId={0} />
-        <Area type="monotone" dataKey="total_debt" stroke="#f59e0b" fill="url(#debtGrad)"
-          strokeWidth={2.5} dot={false} activeDot={{ r: 5, fill: '#f59e0b' }} yAxisId={0} />
+        <Bar dataKey="paid" fill="#10b981" fillOpacity={0.75} radius={[3,3,0,0]} yAxisId="right" name="paid" />
+        <Area
+          type="monotone" dataKey="total_debt" stroke="#f59e0b" fill="url(#debtGrad)"
+          strokeWidth={2.5} dot={false} activeDot={{ r: 5, fill: '#f59e0b' }} yAxisId="left" name="total_debt"
+        />
       </ComposedChart>
+    </ResponsiveContainer>
+  )
+}
+
+function SavingsRateTrend({ data, target }) {
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+        <XAxis dataKey="label" tick={{ fill: '#6b7280', fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis
+          tick={{ fill: '#6b7280', fontSize: 11 }}
+          tickFormatter={(v) => `${v.toFixed(0)}%`}
+          width={42}
+          axisLine={false}
+          tickLine={false}
+        />
+        <Tooltip
+          contentStyle={{ background: '#111827', border: '1px solid #374151', borderRadius: 8 }}
+          labelStyle={{ color: '#f9fafb', fontSize: 12 }}
+          formatter={(v, name) => {
+            if (name === 'target') return [`${Number(v).toFixed(0)}%`, 'Target']
+            return [`${Number(v).toFixed(1)}%`, 'Savings Rate']
+          }}
+        />
+        <Legend wrapperStyle={{ color: '#9ca3af', fontSize: 11 }}
+          formatter={(v) => v === 'savings_rate' ? 'Savings Rate' : 'Target'} />
+        {target > 0 && (
+          <ReferenceLine y={target} stroke="#8b5cf6" strokeDasharray="5 5"
+            label={{ value: `Target ${target.toFixed(0)}%`, fill: '#8b5cf6', fontSize: 10, position: 'insideTopRight' }}
+          />
+        )}
+        <Line
+          type="monotone" dataKey="savings_rate" stroke="#10b981"
+          strokeWidth={2.5} dot={{ r: 4, fill: '#10b981' }} activeDot={{ r: 6 }}
+        />
+      </LineChart>
     </ResponsiveContainer>
   )
 }

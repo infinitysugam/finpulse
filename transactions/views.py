@@ -4,7 +4,7 @@ from decimal import Decimal
 from datetime import datetime, date
 
 from django.db.models import Sum, Count, Q
-from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth, TruncYear
 from dateutil.relativedelta import relativedelta
 from rest_framework import generics, status, filters
 from rest_framework.permissions import IsAuthenticated
@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 from accounts.models import Account
 from loans.models import Loan
 from investments.models import Portfolio, Holding
-from .models import Category, Transaction, CSVImportLog
+from .models import Category, Transaction, CSVImportLog, MonthlySnapshot
 from .serializers import (
     CategorySerializer, TransactionSerializer,
     CSVImportLogSerializer, CSVUploadSerializer,
@@ -191,7 +191,12 @@ class TransactionListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         tx = serializer.save()
         if tx.transaction_type == 'transfer':
-            _adjust_transfer(tx.account_id, tx.to_account_id, tx.amount)
+            if tx.to_account_id:
+                _adjust_transfer(tx.account_id, tx.to_account_id, tx.amount)
+            elif tx.portfolio_id:
+                if tx.account_id:
+                    _adjust_account(tx.account_id, 'expense', tx.amount)
+                _adjust_portfolio_cash(tx.portfolio_id, tx.amount)
         elif tx.transaction_type == 'investment':
             if tx.account_id:
                 _adjust_account(tx.account_id, 'expense', tx.amount)
@@ -224,7 +229,12 @@ class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         # Reverse old effect
         if old_type == 'transfer':
-            _adjust_transfer(old_account_id, old_to_id, old_amount, reverse=True)
+            if old_to_id:
+                _adjust_transfer(old_account_id, old_to_id, old_amount, reverse=True)
+            elif old_portfolio_id:
+                if old_account_id:
+                    _adjust_account(old_account_id, 'expense', old_amount, reverse=True)
+                _adjust_portfolio_cash(old_portfolio_id, old_amount, reverse=True)
         elif old_type == 'investment':
             if old_account_id:
                 _adjust_account(old_account_id, 'expense', old_amount, reverse=True)
@@ -238,7 +248,12 @@ class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         # Apply new effect
         if tx.transaction_type == 'transfer':
-            _adjust_transfer(tx.account_id, tx.to_account_id, tx.amount)
+            if tx.to_account_id:
+                _adjust_transfer(tx.account_id, tx.to_account_id, tx.amount)
+            elif tx.portfolio_id:
+                if tx.account_id:
+                    _adjust_account(tx.account_id, 'expense', tx.amount)
+                _adjust_portfolio_cash(tx.portfolio_id, tx.amount)
         elif tx.transaction_type == 'investment':
             if tx.account_id:
                 _adjust_account(tx.account_id, 'expense', tx.amount)
@@ -259,7 +274,12 @@ class TransactionDetailView(generics.RetrieveUpdateDestroyAPIView):
         amount       = instance.amount
         instance.delete()
         if tx_type == 'transfer':
-            _adjust_transfer(account_id, to_id, amount, reverse=True)
+            if to_id:
+                _adjust_transfer(account_id, to_id, amount, reverse=True)
+            elif portfolio_id:
+                if account_id:
+                    _adjust_account(account_id, 'expense', amount, reverse=True)
+                _adjust_portfolio_cash(portfolio_id, amount, reverse=True)
         elif tx_type == 'investment':
             if account_id:
                 _adjust_account(account_id, 'expense', amount, reverse=True)
@@ -323,6 +343,110 @@ class CategoryTrendsView(APIView):
         return Response({
             'series':     series,
             'categories': [{'name': k, 'color': v} for k, v in categories_meta.items()],
+        })
+
+
+class ExpenseTimeseriesView(APIView):
+    """
+    GET /api/transactions/dashboard/expense-timeseries/
+        ?granularity=daily|weekly|monthly|yearly
+        &range=1m|3m|6m|1y|2y
+    Returns all expense categories + time-series data so the frontend
+    can render a filterable multi-line chart.
+    """
+    permission_classes = [IsAuthenticated]
+
+    TRUNC = {
+        'daily':   TruncDay,
+        'weekly':  TruncWeek,
+        'monthly': TruncMonth,
+        'yearly':  TruncYear,
+    }
+    FMT = {
+        'daily':   '%d %b %y',
+        'weekly':  '%d %b %y',
+        'monthly': '%b %y',
+        'yearly':  '%Y',
+    }
+
+    def get(self, request):
+        user        = request.user
+        granularity = request.query_params.get('granularity', 'monthly')
+        date_range  = request.query_params.get('range', '6m')
+        today       = date.today()
+
+        from_date = {
+            '1m':  today - relativedelta(months=1),
+            '3m':  today - relativedelta(months=3),
+            '6m':  today - relativedelta(months=6),
+            '1y':  today - relativedelta(years=1),
+            '2y':  today - relativedelta(years=2),
+        }.get(date_range, today - relativedelta(months=6))
+
+        trunc_fn = self.TRUNC.get(granularity, TruncMonth)
+        fmt      = self.FMT.get(granularity, '%b %y')
+
+        rows = (
+            Transaction.objects
+            .filter(user=user, transaction_type='expense', date__gte=from_date)
+            .annotate(period=trunc_fn('date'))
+            .values('period', 'category_id', 'category__name', 'category__color')
+            .annotate(total=Sum('amount'))
+            .order_by('period')
+        )
+
+        # Collect categories and raw data
+        categories = {}   # name → {id, name, color}
+        raw = {}          # period_str → {cat_name: total}
+
+        for row in rows:
+            cat_name  = row['category__name'] or 'Uncategorized'
+            cat_color = row['category__color'] or '#6b7280'
+            cat_id    = row['category_id']
+            period_str = row['period'].strftime(fmt)
+
+            categories.setdefault(cat_name, {'id': cat_id, 'name': cat_name, 'color': cat_color})
+            raw.setdefault(period_str, {})[cat_name] = float(row['total'])
+
+        # Generate all periods in range (no gaps)
+        periods = []
+        if granularity == 'daily':
+            cursor = from_date
+            while cursor <= today:
+                periods.append(cursor.strftime(fmt))
+                cursor += relativedelta(days=1)
+        elif granularity == 'weekly':
+            cursor = from_date - relativedelta(days=from_date.weekday())
+            while cursor <= today:
+                periods.append(cursor.strftime(fmt))
+                cursor += relativedelta(weeks=1)
+        elif granularity == 'monthly':
+            cursor = from_date.replace(day=1)
+            while cursor <= today:
+                periods.append(cursor.strftime(fmt))
+                cursor += relativedelta(months=1)
+        else:  # yearly
+            cursor = from_date.replace(month=1, day=1)
+            while cursor <= today:
+                periods.append(cursor.strftime(fmt))
+                cursor += relativedelta(years=1)
+
+        # Build recharts-ready series, zero-filling missing values
+        cat_names = list(categories.keys())
+        series = []
+        seen = set()
+        for p in periods:
+            if p in seen:
+                continue
+            seen.add(p)
+            point = {'date': p}
+            for name in cat_names:
+                point[name] = raw.get(p, {}).get(name, 0)
+            series.append(point)
+
+        return Response({
+            'categories': list(categories.values()),
+            'series':     series,
         })
 
 
@@ -596,74 +720,107 @@ class DashboardSummaryView(APIView):
 
 class DebtHistoryView(APIView):
     """
-    GET /api/transactions/dashboard/debt-history/?range=3m|6m|1y|2y
-    Reconstructs total debt per month by anchoring to today's balances
-    and replaying principal payments backwards.
+    GET /api/transactions/dashboard/debt-history/
+        ?range=3m|6m|1y|2y
+        &granularity=daily|weekly|monthly
+
+    Reconstructs total debt over time by anchoring to today's balances
+    and replaying principal payments forward.
+    Also surfaces loan-expense transactions as 'paid' so the bars show
+    even when formal LoanPayment records don't exist.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from loans.models import LoanPayment
 
-        user = request.user
-        date_range = request.query_params.get('range', '1y')
-        today = date.today()
+        user        = request.user
+        date_range  = request.query_params.get('range', '1y')
+        granularity = request.query_params.get('granularity', 'monthly')
+        today       = date.today()
 
         from_date = {
+            '1m': today - relativedelta(months=1),
             '3m': today - relativedelta(months=3),
             '6m': today - relativedelta(months=6),
             '1y': today - relativedelta(years=1),
             '2y': today - relativedelta(years=2),
         }.get(date_range, today - relativedelta(years=1))
 
-        # Anchor: today's total debt across all non-receivable loans
+        trunc_fn, step_fn, key_fmt, label_fmt = {
+            'daily':   (TruncDay,   lambda d: d + relativedelta(days=1),   '%Y-%m-%d', '%Y-%m-%d'),
+            'weekly':  (TruncWeek,  lambda d: d + relativedelta(weeks=1),  '%Y-%W',    '%Y-%m-%d'),
+            'monthly': (TruncMonth, lambda d: d + relativedelta(months=1), '%Y-%m',    '%Y-%m-%d'),
+        }.get(granularity, (TruncMonth, lambda d: d + relativedelta(months=1), '%Y-%m', '%Y-%m-%d'))
+
+        # Anchor: today's total debt
         current_debt = Decimal(str(
             Loan.objects.filter(user=user)
             .exclude(loan_type='lent_to_friend')
             .aggregate(t=Sum('current_balance'))['t'] or 0
         ))
 
-        # Monthly principal paid (grouped by month)
+        # Principal paid from formal LoanPayment records
         payment_rows = (
             LoanPayment.objects
-            .filter(loan__user=user)
+            .filter(loan__user=user, payment_date__gte=from_date)
             .exclude(loan__loan_type='lent_to_friend')
-            .annotate(month=TruncMonth('payment_date'))
-            .values('month')
+            .annotate(period=trunc_fn('payment_date'))
+            .values('period')
             .annotate(principal_paid=Sum('principal_component'))
-            .order_by('month')
         )
-        by_month = {
-            p['month'].strftime('%Y-%m'): Decimal(str(p['principal_paid']))
-            for p in payment_rows
+        by_period = {
+            r['period'].strftime(key_fmt): Decimal(str(r['principal_paid']))
+            for r in payment_rows
         }
 
-        # Starting debt at window start = current_debt + all principal paid inside window
-        window_key = from_date.strftime('%Y-%m')
-        paid_in_window = sum(v for k, v in by_month.items() if k >= window_key)
+        # Also pick up loan-linked expense transactions (covers users who don't
+        # record via LoanPayment but use the transaction system with a loan FK)
+        tx_rows = (
+            Transaction.objects
+            .filter(user=user, transaction_type='expense', loan__isnull=False, date__gte=from_date)
+            .exclude(loan__loan_type='lent_to_friend')
+            .annotate(period=trunc_fn('date'))
+            .values('period')
+            .annotate(tx_paid=Sum('amount'))
+        )
+        for r in tx_rows:
+            key = r['period'].strftime(key_fmt)
+            by_period[key] = by_period.get(key, Decimal('0')) + Decimal(str(r['tx_paid']))
+
+        # Reconstruct start debt: current + all principal paid inside window
+        start_key = from_date.strftime(key_fmt)
+        paid_in_window = sum(v for k, v in by_period.items() if k >= start_key)
         window_start_debt = current_debt + paid_in_window
 
-        # Walk forward month-by-month, subtracting principal paid each month
+        # Walk forward period-by-period
         series = []
         running = window_start_debt
-        cursor = from_date.replace(day=1)
+
+        if granularity == 'daily':
+            cursor = from_date
+        elif granularity == 'weekly':
+            cursor = from_date - relativedelta(days=from_date.weekday())
+        else:
+            cursor = from_date.replace(day=1)
+
         while cursor <= today:
-            key = cursor.strftime('%Y-%m')
-            paid = by_month.get(key, Decimal('0'))
+            key  = cursor.strftime(key_fmt)
+            paid = by_period.get(key, Decimal('0'))
             running = max(Decimal('0'), running - paid)
             series.append({
                 'date':       cursor.strftime('%Y-%m-%d'),
                 'total_debt': float(running),
                 'paid':       float(paid),
             })
-            cursor += relativedelta(months=1)
+            cursor = step_fn(cursor)
 
-        # Pin the last point to the real current balance
         if series:
             series[-1]['total_debt'] = float(current_debt)
 
         return Response({
             'range':        date_range,
+            'granularity':  granularity,
             'current_debt': float(current_debt),
             'series':       series,
         })
@@ -796,3 +953,27 @@ class CSVUploadView(APIView):
             return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response(CSVImportLogSerializer(log).data, status=status.HTTP_201_CREATED)
+
+
+class MonthlySnapshotListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        snapshots = (
+            MonthlySnapshot.objects.filter(user=request.user)
+            .order_by('year', 'month')
+        )[:24]
+        data = []
+        for s in snapshots:
+            data.append({
+                'year': s.year,
+                'month': s.month,
+                'label': date(s.year, s.month, 1).strftime('%b %y'),
+                'total_income': float(s.total_income),
+                'total_expenses': float(s.total_expenses),
+                'net_savings': float(s.net_savings),
+                'savings_rate': float(s.savings_rate),
+                'net_worth': float(s.net_worth),
+                'category_breakdown': s.category_breakdown,
+            })
+        return Response({'snapshots': data})

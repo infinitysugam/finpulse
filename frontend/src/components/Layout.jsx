@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, ArrowLeftRight, CreditCard,
-  TrendingUp, Bot, LogOut, Zap, Receipt, Landmark,
+  TrendingUp, Bot, LogOut, Zap, Receipt, Landmark, Flame, Search, Wallet, Dumbbell,
 } from 'lucide-react'
 import useAuthStore from '../store/authStore'
 import clsx from 'clsx'
@@ -12,6 +12,10 @@ const nav = [
   { to: '/transactions',label: 'Transactions', icon: ArrowLeftRight },
   { to: '/loans',       label: 'Loans',        icon: CreditCard },
   { to: '/investments', label: 'Investments',  icon: TrendingUp },
+  { to: '/goals',       label: 'Goals',        icon: Flame },
+  { to: '/budget',      label: 'Budget',       icon: Wallet },
+  { to: '/screener',    label: 'Screener',     icon: Search },
+  { to: '/fitness',     label: 'Fitness',      icon: Dumbbell },
   { to: '/ai',          label: 'AI Agent',     icon: Bot },
   { to: '/subscriptions', label: 'Subscriptions', icon: Receipt },
 ]

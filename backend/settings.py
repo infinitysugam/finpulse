@@ -26,13 +26,18 @@ INSTALLED_APPS = [
     'corsheaders',
 
     # Local apps
+    'backend',
     'users',
+    'fitness',
     'accounts',
     'transactions',
     'loans',
     'investments',
     'ai_agent',
     'subscriptions',
+    'goals',
+    'screener',
+    'budget',
 ]
 
 MIDDLEWARE = [
@@ -119,3 +124,13 @@ CORS_ALLOW_CREDENTIALS = True
 # ── Encryption key for sensitive financial fields ─────────────────────────────
 # In production, store this in a secrets manager (AWS KMS, Vault, etc.)
 FIELD_ENCRYPTION_KEY = os.getenv('FIELD_ENCRYPTION_KEY', SECRET_KEY[:32].ljust(32, '0'))
+
+# ── Anthropic ─────────────────────────────────────────────────────────────────
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
+NEWS_API_KEY      = os.getenv('NEWS_API_KEY', '')
+REDDIT_CLIENT_ID     = os.getenv('REDDIT_CLIENT_ID', '')
+REDDIT_CLIENT_SECRET = os.getenv('REDDIT_CLIENT_SECRET', '')
+REDDIT_USER_AGENT    = os.getenv('REDDIT_USER_AGENT', 'finpulse/1.0')
+
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID   = os.getenv('TELEGRAM_CHAT_ID', '')

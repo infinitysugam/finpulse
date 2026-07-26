@@ -227,39 +227,121 @@ function CreditCardInsights({ loan }) {
 
 // ─── Payment due badge ───────────────────────────────────────────────────────
 
-function PaymentDueBadge({ dueDay }) {
-  if (!dueDay) return null
+const ordinal = (n) => {
+  const s = ['th', 'st', 'nd', 'rd']
+  const v = n % 100
+  return n + (s[(v - 20) % 10] || s[v] || s[0])
+}
 
+function getNextDueDate(dueDay, fromDate) {
+  const d = new Date(fromDate)
+  d.setHours(0, 0, 0, 0)
+  const sameMonth = new Date(d.getFullYear(), d.getMonth(), dueDay)
+  return sameMonth > d ? sameMonth : new Date(d.getFullYear(), d.getMonth() + 1, dueDay)
+}
+
+function computePaymentStatus(dueDay, payments) {
   const today = new Date()
-  const currentDay = today.getDate()
-  const currentMonth = today.getMonth()
-  const currentYear = today.getFullYear()
+  today.setHours(0, 0, 0, 0)
 
-  // Next due date this month or next
-  let dueDate = new Date(currentYear, currentMonth, dueDay)
-  if (dueDate <= today) {
-    dueDate = new Date(currentYear, currentMonth + 1, dueDay)
+  const lastPayment = (payments ?? []).length > 0
+    ? [...payments].sort((a, b) => new Date(b.payment_date) - new Date(a.payment_date))[0]
+    : null
+
+  let nextDue, paid = false
+
+  if (lastPayment) {
+    const lastDate = new Date(lastPayment.payment_date + 'T00:00:00')
+    const nextAfterPayment = getNextDueDate(dueDay, lastDate)
+    if (nextAfterPayment > today) {
+      paid = true
+      nextDue = nextAfterPayment
+    } else {
+      nextDue = getNextDueDate(dueDay, today)
+    }
+  } else {
+    nextDue = getNextDueDate(dueDay, today)
   }
 
+  const daysUntil = Math.ceil((nextDue - today) / (1000 * 60 * 60 * 24))
+  return { paid, nextDue, daysUntil }
+}
+
+// Pass `loan` for smart early-payment detection, or just `dueDay` for simple display
+function PaymentDueBadge({ dueDay, loan }) {
+  const day = dueDay ?? loan?.payment_due_day
+  if (!day) return null
+
+  if (loan?.payments !== undefined) {
+    const { paid, daysUntil } = computePaymentStatus(day, loan.payments)
+
+    if (paid) {
+      return (
+        <div className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          Paid ✓ · Next due {ordinal(day)} · {daysUntil}d away
+        </div>
+      )
+    }
+
+    const urgency =
+      daysUntil <= 3 ? { bg: 'bg-red-500/15',   text: 'text-red-400',   dot: 'bg-red-400' } :
+      daysUntil <= 7 ? { bg: 'bg-amber-500/15', text: 'text-amber-400', dot: 'bg-amber-400' } :
+                       { bg: 'bg-gray-700/60',  text: 'text-gray-400',  dot: 'bg-gray-500' }
+
+    return (
+      <div className={clsx('inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-full text-xs font-medium', urgency.bg, urgency.text)}>
+        <span className={clsx('w-1.5 h-1.5 rounded-full', urgency.dot)} />
+        Due {ordinal(day)} · {daysUntil === 0 ? 'due today' : `${daysUntil}d away`}
+      </div>
+    )
+  }
+
+  // Fallback: simple display without payment history
+  const today = new Date()
+  let dueDate = new Date(today.getFullYear(), today.getMonth(), day)
+  if (dueDate <= today) dueDate = new Date(today.getFullYear(), today.getMonth() + 1, day)
   const daysUntil = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24))
-
-  const ordinal = (n) => {
-    const s = ['th', 'st', 'nd', 'rd']
-    const v = n % 100
-    return n + (s[(v - 20) % 10] || s[v] || s[0])
-  }
-
   const urgency =
-    daysUntil <= 3  ? { bg: 'bg-red-500/15',    text: 'text-red-400',    dot: 'bg-red-400' } :
-    daysUntil <= 7  ? { bg: 'bg-amber-500/15',  text: 'text-amber-400',  dot: 'bg-amber-400' } :
-                      { bg: 'bg-gray-700/60',   text: 'text-gray-400',   dot: 'bg-gray-500' }
-
+    daysUntil <= 3 ? { bg: 'bg-red-500/15',   text: 'text-red-400',   dot: 'bg-red-400' } :
+    daysUntil <= 7 ? { bg: 'bg-amber-500/15', text: 'text-amber-400', dot: 'bg-amber-400' } :
+                     { bg: 'bg-gray-700/60',  text: 'text-gray-400',  dot: 'bg-gray-500' }
   return (
     <div className={clsx('inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded-full text-xs font-medium', urgency.bg, urgency.text)}>
       <span className={clsx('w-1.5 h-1.5 rounded-full', urgency.dot)} />
-      Due {ordinal(dueDay)} of each month
-      {' · '}
-      {daysUntil === 0 ? 'due today' : `${daysUntil}d away`}
+      Due {ordinal(day)} of each month · {daysUntil === 0 ? 'due today' : `${daysUntil}d away`}
+    </div>
+  )
+}
+
+// ─── Accrued interest since last payment ──────────────────────────────────────
+
+function AccruedInterest({ loan }) {
+  const apr = Number(loan.annual_interest_rate)
+  const balance = Number(loan.current_balance)
+  if (apr === 0 || balance === 0) return null
+
+  const sorted = [...(loan.payments ?? [])].sort(
+    (a, b) => new Date(b.payment_date) - new Date(a.payment_date)
+  )
+  const anchorStr = sorted[0]?.payment_date ?? loan.start_date
+  if (!anchorStr) return null
+
+  const anchor = new Date(anchorStr + 'T00:00:00')
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const days = Math.max(0, Math.round((today - anchor) / 86400000))
+  const accrued = balance * (apr / 100 / 365) * days
+
+  if (accrued <= 0.005) return null
+
+  return (
+    <div className="mt-2 flex items-center justify-between bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 text-xs">
+      <span className="text-gray-400">
+        Interest accrued since last payment
+        <span className="text-gray-600 ml-1">({days}d ago)</span>
+      </span>
+      <span className="text-amber-400 font-semibold">{fmt(accrued)}</span>
     </div>
   )
 }
@@ -418,6 +500,107 @@ function PaymentHistoryPanel({ loan }) {
   )
 }
 
+function computeSavings(loan) {
+  const payments = loan.payments ?? []
+  if (!payments.length || !loan.principal || Number(loan.annual_interest_rate) === 0) return null
+
+  const principal   = Number(loan.principal)
+  const dailyRate   = Number(loan.annual_interest_rate) / 100 / 365
+  const minPayment  = Number(loan.monthly_payment)
+
+  const sorted = [...payments].sort((a, b) => new Date(a.payment_date) - new Date(b.payment_date))
+  const N = sorted.length
+
+  // Simulate N on-schedule payments (30-day intervals, minimum payment, no early/extra)
+  let schedBal = principal
+  let schedInterest = 0
+  for (let i = 0; i < N; i++) {
+    const interest = schedBal * dailyRate * 30
+    schedInterest += interest
+    const principal_paid = Math.min(minPayment - interest, schedBal)
+    schedBal = Math.max(0, schedBal - principal_paid)
+  }
+
+  const actualInterest = sorted.reduce((s, p) => s + Number(p.interest_component), 0)
+  const saved       = Math.max(0, schedInterest - actualInterest)
+  const balanceAhead = Math.max(0, schedBal - Number(loan.current_balance))
+
+  // Estimate future savings from carrying a lower balance forward
+  // rough: balance difference × daily rate × estimated remaining days
+  const remainingMonths = minPayment > 0
+    ? Math.ceil(Number(loan.current_balance) / minPayment)
+    : 0
+  const projectedFutureSaving = balanceAhead * dailyRate * (remainingMonths * 30)
+
+  return {
+    saved,
+    balanceAhead,
+    actualInterest,
+    schedInterest,
+    paymentsCount: N,
+    projectedFutureSaving: Math.max(0, projectedFutureSaving),
+  }
+}
+
+function SavingsSummary({ loan }) {
+  const [expanded, setExpanded] = useState(false)
+  const s = computeSavings(loan)
+  if (!s || s.saved < 0.01) return null
+
+  return (
+    <div className="mt-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center justify-between px-3 py-2.5 text-xs hover:bg-emerald-500/5 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+          <span className="text-gray-400">Interest saved vs paying on schedule</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-emerald-400 font-semibold">{fmt(s.saved)}</span>
+          {expanded ? <ChevronUp size={12} className="text-gray-500" /> : <ChevronDown size={12} className="text-gray-500" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-emerald-500/20 px-3 py-3 space-y-2">
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="bg-gray-800/60 rounded-lg p-2.5">
+              <p className="text-gray-500 mb-0.5">Scheduled interest paid</p>
+              <p className="font-semibold text-red-400">{fmt(s.schedInterest)}</p>
+              <p className="text-gray-600 mt-0.5">if paid on due date each month</p>
+            </div>
+            <div className="bg-gray-800/60 rounded-lg p-2.5">
+              <p className="text-gray-500 mb-0.5">Actual interest paid</p>
+              <p className="font-semibold text-emerald-400">{fmt(s.actualInterest)}</p>
+              <p className="text-gray-600 mt-0.5">with your early / extra payments</p>
+            </div>
+          </div>
+
+          {s.balanceAhead > 1 && (
+            <div className="flex items-center justify-between bg-gray-800/60 rounded-lg px-3 py-2 text-xs">
+              <span className="text-gray-400">Balance ahead of schedule</span>
+              <span className="text-emerald-400 font-semibold">{fmt(s.balanceAhead)}</span>
+            </div>
+          )}
+
+          {s.projectedFutureSaving > 1 && (
+            <div className="flex items-center justify-between bg-gray-800/60 rounded-lg px-3 py-2 text-xs">
+              <span className="text-gray-400">Projected future savings</span>
+              <span className="text-blue-400 font-semibold">~{fmt(s.projectedFutureSaving)}</span>
+            </div>
+          )}
+
+          <p className="text-xs text-gray-600 text-center">
+            Based on {s.paymentsCount} payment{s.paymentsCount !== 1 ? 's' : ''} · TRUE_DAILY vs 30-day schedule
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function RegularLoanCard({ loan, onEdit, onDelete, onMathEngine, onRecordPayment }) {
   const [open, setOpen] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
@@ -462,7 +645,9 @@ function RegularLoanCard({ loan, onEdit, onDelete, onMathEngine, onRecordPayment
       <p className="text-xs text-gray-500 mt-1.5">
         {fmt(paidOff)} paid of {fmt(loan.principal)} ({paidPct}%)
       </p>
-      <PaymentDueBadge dueDay={loan.payment_due_day} />
+      <AccruedInterest loan={loan} />
+      <SavingsSummary loan={loan} />
+      <PaymentDueBadge loan={loan} />
 
       <div className="mt-3 flex items-center gap-3 flex-wrap">
         <button
@@ -804,9 +989,94 @@ function RecordPaymentModal({ loan, onClose }) {
   )
 }
 
+function LendMoreForm({ loan, onClose }) {
+  const qc = useQueryClient()
+  const [amount, setAmount] = useState('')
+  const [accountId, setAccountId] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const { data: accountsData } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () => api.get('/accounts/').then(r => r.data),
+  })
+  const accounts = (accountsData?.results ?? accountsData ?? [])
+    .filter(a => a.is_active && ['checking', 'savings', 'cash'].includes(a.account_type))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    const extra = parseFloat(amount)
+    if (!extra || extra <= 0) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const payload = { amount: extra }
+      if (accountId) payload.account_id = parseInt(accountId, 10)
+      await api.post(`/loans/${loan.id}/lend-more/`, payload)
+      qc.invalidateQueries({ queryKey: ['loans'] })
+      qc.invalidateQueries({ queryKey: ['accounts'] })
+      onClose()
+    } catch {
+      setError('Failed to update loan.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mt-3 bg-gray-800/60 rounded-xl p-3 border border-emerald-700/40 space-y-2">
+      <p className="text-xs font-semibold text-emerald-400">Lend More</p>
+      <div className="flex gap-2">
+        <input
+          type="number" step="0.01" min="0.01" required
+          placeholder="Amount ($)"
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
+          autoFocus
+        />
+        <button
+          type="submit"
+          disabled={submitting || !amount}
+          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors"
+        >
+          {submitting ? '…' : 'Add'}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-lg transition-colors"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <select
+        value={accountId}
+        onChange={e => setAccountId(e.target.value)}
+        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+      >
+        <option value="">— Debit from account (optional) —</option>
+        {accounts.map(a => (
+          <option key={a.id} value={a.id}>
+            {a.name} ({a.account_type}) — {fmt(a.balance)}
+          </option>
+        ))}
+      </select>
+      {amount && (
+        <p className="text-xs text-gray-500">
+          Total owed will become {fmt(Number(loan.current_balance) + (parseFloat(amount) || 0))}
+          {accountId && ` · ${accounts.find(a => a.id === parseInt(accountId))?.name} will be debited`}
+        </p>
+      )}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </form>
+  )
+}
+
 function LentToFriendCard({ loan, onEdit, onDelete, onRecordPayment }) {
   const repaid  = Number(loan.principal) - Number(loan.current_balance)
   const repaidPct = loan.principal > 0 ? ((repaid / Number(loan.principal)) * 100).toFixed(1) : 0
+  const [showLendMore, setShowLendMore] = useState(false)
 
   return (
     <div className="bg-gray-900 rounded-xl border border-emerald-800/40 p-5">
@@ -856,19 +1126,30 @@ function LentToFriendCard({ loan, onEdit, onDelete, onRecordPayment }) {
       <PaymentDueBadge dueDay={loan.payment_due_day} />
 
       {loan.status !== 'paid_off' && (
-        <div className="mt-3 flex items-center gap-3 flex-wrap">
-          <button
-            onClick={() => onRecordPayment(loan)}
-            className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
-          >
-            <PayIcon size={14} /> Record Repayment
-          </button>
-          {(loan.payments?.length > 0) && (
-            <span className="text-xs text-gray-600">
-              {loan.payments.length} repayment{loan.payments.length !== 1 ? 's' : ''} recorded
-            </span>
+        <>
+          <div className="mt-3 flex items-center gap-3 flex-wrap">
+            <button
+              onClick={() => onRecordPayment(loan)}
+              className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 transition-colors"
+            >
+              <PayIcon size={14} /> Record Repayment
+            </button>
+            <button
+              onClick={() => setShowLendMore(s => !s)}
+              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              <Plus size={14} /> Lend More
+            </button>
+            {(loan.payments?.length > 0) && (
+              <span className="text-xs text-gray-600">
+                {loan.payments.length} repayment{loan.payments.length !== 1 ? 's' : ''} recorded
+              </span>
+            )}
+          </div>
+          {showLendMore && (
+            <LendMoreForm loan={loan} onClose={() => setShowLendMore(false)} />
           )}
-        </div>
+        </>
       )}
     </div>
   )
@@ -1502,8 +1783,10 @@ function LoanFormModal({ existing, onClose }) {
       const payload = Object.fromEntries(
         Object.entries(data).filter(([, v]) => v !== '')
       )
-      if (data.loan_type === 'lent_to_friend' && !isEdit && sourceAccountId) {
-        payload.source_account_id = parseInt(sourceAccountId, 10)
+      if (data.loan_type === 'lent_to_friend' && !isEdit) {
+        // principal = original amount lent so repayment progress bar works
+        if (payload.current_balance) payload.principal = payload.current_balance
+        if (sourceAccountId) payload.source_account_id = parseInt(sourceAccountId, 10)
       }
       return isEdit ? api.patch(`/loans/${existing.id}/`, payload) : api.post('/loans/', payload)
     },
@@ -1826,6 +2109,7 @@ export default function Loans() {
             loans={lentLoans}
             onEdit={(l) => setModal({ type: 'edit', loan: l })}
             onDelete={(l) => setModal({ type: 'delete', loan: l })}
+            onRecordPayment={(l) => setRecordPaymentLoan(l)}
             summary={(() => {
               const active = lentLoans.filter((l) => l.status === 'active')
               return [

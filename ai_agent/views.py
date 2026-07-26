@@ -57,24 +57,27 @@ class ChatView(APIView):
             content=user_message_text,
         )
 
-        # ── Placeholder: wire real LLM call here ────────────────────────────
-        # from .agent import run_agent
-        # assistant_response = run_agent(request.user, conversation, user_message_text)
-        assistant_text = (
-            "I'm your FinPulse AI Agent. LLM integration coming in the next phase. "
-            f"You asked: \"{user_message_text}\""
-        )
-        # ─────────────────────────────────────────────────────────────────────
+        from .agent import run_agent
+        result = run_agent(request.user, conversation, user_message_text)
 
         assistant_msg = Message.objects.create(
             conversation=conversation,
             role='assistant',
-            content=assistant_text,
+            content=result['text'],
+            prompt_tokens=result['input_tokens'],
+            completion_tokens=result['output_tokens'],
         )
 
-        conversation.save()  # bumps updated_at
+        conversation.save()
 
         return Response({
             'conversation_id': conversation.pk,
             'message': MessageSerializer(assistant_msg).data,
+            'meta': {
+                'input_tokens':  result['input_tokens'],
+                'output_tokens': result['output_tokens'],
+                'cost_usd':      result['cost_usd'],
+                'system_prompt': result['system_prompt'],
+                'tool_calls':    result['tool_calls'],
+            },
         }, status=status.HTTP_200_OK)
