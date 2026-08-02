@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from django.db import transaction as db_transaction
 from rest_framework import generics, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -63,7 +64,35 @@ class HoldingListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         portfolio = Portfolio.objects.get(pk=self.kwargs['portfolio_pk'], user=self.request.user)
-        serializer.save(portfolio=portfolio)
+        fund_from_cash = str(self.request.data.get('fund_from_cash', '')).lower() in ('true', '1', 'yes')
+
+        with db_transaction.atomic():
+            holding = serializer.save(portfolio=portfolio)
+
+            if fund_from_cash and holding.asset_type != 'cash' and holding.quantity > 0:
+                cost = holding.quantity * holding.average_cost_basis
+                if cost > 0:
+                    cash = Holding.objects.filter(
+                        portfolio_id=portfolio.id, asset_type='cash', symbol='CASH'
+                    ).first()
+                    cash_available = cash.quantity if cash else Decimal('0')
+                    if cash_available < cost:
+                        raise ValidationError(
+                            f'Insufficient portfolio cash. Available: ${float(cash_available):,.2f}, '
+                            f'required: ${float(cost):,.2f}.'
+                        )
+                    _adjust_portfolio_cash(portfolio.id, -cost)
+
+                    from datetime import date as date_cls
+                    Trade.objects.create(
+                        holding=holding,
+                        trade_type='buy',
+                        quantity=holding.quantity,
+                        price=holding.average_cost_basis,
+                        fees=Decimal('0'),
+                        date=date_cls.today(),
+                        notes='Initial position (funded from portfolio cash)',
+                    )
 
 
 class HoldingDetailView(generics.RetrieveUpdateDestroyAPIView):

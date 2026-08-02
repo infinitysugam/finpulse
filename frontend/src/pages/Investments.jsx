@@ -224,11 +224,15 @@ function CashDepositModal({ portfolio, onClose }) {
 
 // ── Add Holding Modal ─────────────────────────────────────────────────────────
 
-function AddHoldingModal({ portfolioId, onClose }) {
+function AddHoldingModal({ portfolioId, cashBalance = 0, onClose }) {
   const qc = useQueryClient()
-  const { register, handleSubmit } = useForm({
-    defaultValues: { asset_type: 'stock', symbol: '', name: '', quantity: '', average_cost_basis: '' },
+  const { register, handleSubmit, watch } = useForm({
+    defaultValues: {
+      asset_type: 'stock', symbol: '', name: '', quantity: '', average_cost_basis: '',
+      fund_from_cash: false,
+    },
   })
+  const assetType = watch('asset_type')
   const { mutate, isPending, error } = useMutation({
     mutationFn: (d) => api.post(`/investments/portfolios/${portfolioId}/holdings/`, d),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['portfolios'] }); onClose() },
@@ -260,6 +264,17 @@ function AddHoldingModal({ portfolioId, onClose }) {
               <input type="number" step="any" {...register('average_cost_basis', { required: true })} className={inp} />
             </div>
           </div>
+          {assetType !== 'cash' && (
+            <label className="flex items-start gap-2 text-xs text-gray-400 cursor-pointer">
+              <input type="checkbox" {...register('fund_from_cash')} className="mt-0.5" />
+              <span>
+                Deduct cost from portfolio cash
+                <span className="block text-gray-600">
+                  Available: {fmt(cashBalance)} — use this if you paid for this position with cash already in the portfolio.
+                </span>
+              </span>
+            </label>
+          )}
           {error && (
             <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
               {Object.entries(error.response?.data ?? {}).map(([k, v]) =>
@@ -893,7 +908,7 @@ function PortfolioCard({ portfolio }) {
         </div>
       )}
 
-      {showAddHolding  && <AddHoldingModal  portfolioId={portfolio.id} onClose={() => setShowAddHolding(false)} />}
+      {showAddHolding  && <AddHoldingModal  portfolioId={portfolio.id} cashBalance={cashBal} onClose={() => setShowAddHolding(false)} />}
       {showCashDeposit && <CashDepositModal portfolio={portfolio}      onClose={() => setShowCashDeposit(false)} />}
     </div>
   )
